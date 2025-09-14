@@ -10,9 +10,17 @@ import logging
 import subprocess
 import importlib
 
-# Configure logging
+# Configure logging first
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info("✓ .env file loaded successfully")
+except ImportError:
+    logger.warning("python-dotenv not installed, using system environment variables only")
 
 def test_imports():
     """Test all required imports"""
@@ -108,9 +116,20 @@ def test_environment():
     ]
     
     missing_vars = []
+    found_vars = []
+    
     for var in required_vars:
-        if not os.getenv(var):
+        value = os.getenv(var)
+        if not value:
             missing_vars.append(var)
+        else:
+            found_vars.append(f"{var}={value[:10]}..." if len(value) > 10 else f"{var}={value}")
+    
+    # Show what we found
+    if found_vars:
+        logger.info("Found environment variables:")
+        for var in found_vars:
+            logger.info(f"  ✓ {var}")
     
     if missing_vars:
         logger.error(f"Missing environment variables: {missing_vars}")
