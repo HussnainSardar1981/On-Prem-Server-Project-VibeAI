@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 Milestone 1 voice bot:
-- Loads 3CX config from .env (THREECX_* keys you provided)
-- Registers and keeps the account alive
-- Forces ALSA Loopback for capture/playback to avoid ALSA 'Unknown PCM' segfaults
-- Auto-answers inbound calls and bridges audio (call <DID> → ext 1600)
-- Optionally dials ECHO_EXTENSION (e.g. *777) once on startup for a quick test
-- AI pipeline (Whisper/Ollama/Coqui) is OFF by default for M1 stability
+- Reads your .env (THREECX_* keys)
+- Registers to 3CX and keeps account alive
+- Forces ALSA Loopback by enumerating devices by INDEX (portable across pjsua2 builds)
+- Auto-answers inbound calls and bridges audio
+- Optionally dials ECHO_EXTENSION (e.g., *777) once on startup
+- AI pipeline is OFF for M1 stability
 """
 
 import os, sys, time, signal
@@ -16,27 +16,25 @@ import pjsua2 as pj
 # ---------- Load your .env ----------
 load_dotenv()
 
-# 3CX data (exactly your keys)
+# 3CX data (your exact keys)
 SIP_DOMAIN   = os.getenv("THREECX_SERVER", "").strip()
 SIP_PORT     = int(os.getenv("THREECX_PORT", "5060"))
 SIP_EXT      = os.getenv("THREECX_EXTENSION", "").strip()
 SIP_AUTH_ID  = os.getenv("THREECX_AUTH_ID", "").strip()     # Authentication ID
 SIP_PASSWORD = os.getenv("THREECX_PASSWORD", "").strip()
 
-# Optional quick-dial targets (your keys)
+# Optional quick-dial targets
 ECHO_EXTENSION = os.getenv("ECHO_EXTENSION", "*777").strip()
 TEST_EXTENSION = os.getenv("TEST_EXTENSION", "1680").strip()
 
-# Audio knobs (your keys; CHUNK_SIZE is not used for M1 logic here)
+# Audio knobs (not used directly in M1 bridging, but kept for completeness)
 SAMPLE_RATE   = int(os.getenv("SAMPLE_RATE", "8000"))
 CHUNK_SIZE    = int(os.getenv("CHUNK_SIZE", "1024"))
 
-# ---- Toggle AI later if you want (kept False for M1 stability) ----
-ENABLE_AI = False  # set to True after M1 if you want STT→LLM→TTS in this same process
+ENABLE_AI = False  # keep False for M1; turn True later if you add STT/LLM/TTS here
 
 # ---------- PJSUA2 helpers ----------
 class M1Call(pj.Call):
-    """Bridges call audio to ALSA Loopback."""
     def onCallState(self, prm):
         ci = self.getInfo()
         print(f"[CALL] state={ci.stateText} code={ci.lastStatusCode}")
@@ -77,13 +75,38 @@ class M1Bot:
         self.running = True
 
     def _force_loopback(self):
-        """Select ALSA Loopback explicitly to avoid ALSA segfaults."""
-        adm  = self.ep.audDevManager()
-        devs = adm.enumDev2()
-        # Print once for debugging:
-        # for d in devs: print(d.devId, d.name, d.inputCount, d.outputCount)
-        cap  = next(d.devId for d in devs if "loopback" in d.name.lower() and d.inputCount  > 0)
-        play = next(d.devId for d in devs if "loopback" in d.name.lower() and d.outputCount > 0)
+        """Portable: pick Loopback devices by index via getDevInfo(i)."""
+        adm = self.ep.audDevManager()
+
+        # We don't trust enum vector contents for IDs; use indices with getDevInfo(i).
+        # Try a reasonable upper bound; if your build exposes a count method, you can swap this.
+        indices = []
+        try:
+            # Newer bindings: enumerate via enumDev2()/enumDev(); fallback to probe indices 0..63
+            devs = adm.enumDev2() if hasattr(adm, "enumDev2") else adm.enumDev()
+            indices = list(range(len(devs)))
+        except Exception:
+            indices = list(range(64))  # probe first 64 device indices safely
+
+        cap = play = None
+        seen = []
+        for i in indices:
+            try:
+                info = adm.getDevInfo(i)
+            except Exception:
+                continue
+            name = (info.name or "").lower()
+            seen.append((i, info.name, info.inputCount, info.outputCount))
+            if "loopback" in name:
+                if info.inputCount  > 0 and cap  is None: cap  = i
+                if info.outputCount > 0 and play is None: play = i
+
+        if cap is None or play is None:
+            print("[AUDIO] Available devices:")
+            for i, n, ic, oc in seen:
+                print(f"   id={i:2d}  name={n}  in={ic} out={oc}")
+            raise RuntimeError("ALSA Loopback not found. Ensure 'snd-aloop' is loaded and visible in arecord/aplay.")
+
         adm.setCaptureDev(cap)
         adm.setPlaybackDev(play)
         print(f"[AUDIO] Using ALSA Loopback cap={cap} play={play}")
@@ -100,12 +123,12 @@ class M1Bot:
         ep_cfg  = pj.EpConfig();  ep_cfg.logConfig = log_cfg
         self.ep.libInit(ep_cfg)
 
-        # UDP transport (port=0 lets OS pick a free port)
+        # UDP transport
         tcfg = pj.TransportConfig(); tcfg.port = 0
         self.ep.transportCreate(pj.PJSIP_TRANSPORT_UDP, tcfg)
         self.ep.libStart()
 
-        # pin Loopback before creating account
+        # Pin Loopback before account creation
         self._force_loopback()
 
         # Create/register account
@@ -115,7 +138,6 @@ class M1Bot:
         acfg.regConfig.registerOnAdd  = True
         acfg.regConfig.retryIntervalSec = 60
         acfg.regConfig.timeoutSec       = 300
-        # Realm must match 3CX challenge
         acfg.sipConfig.authCreds.append(
             pj.AuthCredInfo("digest", "3CXPhoneSystem", SIP_AUTH_ID, 0, SIP_PASSWORD)
         )
@@ -125,7 +147,7 @@ class M1Bot:
         time.sleep(3)
         print("[SIP] Registered:", self.acc.getInfo().regIsActive)
 
-        # Optional: place one echo call on startup for proof
+        # Optional: place one echo call for proof
         if ECHO_EXTENSION:
             self.call = M1Call(self.acc)
             dst = f"sip:{ECHO_EXTENSION}@{SIP_DOMAIN}"
@@ -133,11 +155,8 @@ class M1Bot:
             self.call.makeCall(dst, pj.CallOpParam(True))
 
     def _on_media_active(self, call):
-        """Hook when inbound call becomes active. (For M1 we only bridge.)"""
         self.call = call
-        if ENABLE_AI:
-            # For M1 we keep AI off; if you enable it later, start your STT/LLM/TTS thread here.
-            pass
+        # If you later set ENABLE_AI=True, start your STT/LLM/TTS thread here.
 
     def run(self):
         def _stop(sig, frm):
@@ -158,7 +177,7 @@ class M1Bot:
 if __name__ == "__main__":
     # Make sure ALSA loopback exists:
     #   sudo modprobe snd-aloop
-    #   aplay -l / arecord -l should list "Loopback"
+    #   aplay -l ; arecord -l  (should list "Loopback")
     bot = M1Bot()
     bot.start()
     bot.run()
