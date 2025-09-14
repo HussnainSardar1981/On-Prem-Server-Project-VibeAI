@@ -1,509 +1,653 @@
 #!/usr/bin/env python3
 """
-VIBEAI Voice Bot - Milestone 1 & 2 Validation Script
-Comprehensive testing for production deployment
+3CX AI Voice Bot - Production PJSUA2 Implementation
+Milestone 2: Complete SIP + AI pipeline integration
 """
 
 import os
 import sys
 import time
-import json
-import requests
-import subprocess
 import threading
-from pathlib import Path
-from datetime import datetime
+import queue
+import signal
+import logging
+import argparse
+import subprocess
+from typing import Optional, Tuple, List
+from dataclasses import dataclass
+from dotenv import load_dotenv
 
+import pjsua2 as pj
+import alsaaudio
 import numpy as np
-import torch
+import webrtcvad
 import whisper
+import requests
 from TTS.api import TTS
+import librosa
 
-# PJSUA2 import test
-try:
-    import pjsua2 as pj
-    PJSUA2_AVAILABLE = True
-except ImportError:
-    PJSUA2_AVAILABLE = False
+# Load environment variables
+load_dotenv()
 
-class MilestoneValidator:
-    def __init__(self):
-        self.results = {}
-        self.start_time = datetime.now()
-        
-    def log(self, message, level="INFO"):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{timestamp}] [{level}] {message}")
-        
-    def test_environment(self):
-        """Test environment configuration"""
-        self.log("Testing environment configuration...")
-        
-        tests = {
-            ".env file exists": os.path.exists(".env"),
-            "Virtual environment": os.environ.get("VIRTUAL_ENV") is not None,
-            "Python version": sys.version_info >= (3, 10),
-            "GPU available": torch.cuda.is_available() if hasattr(torch, 'cuda') else False
-        }
-        
-        # Generate and save report
-        report = self.generate_report()
-        
-        # Save to file
-        with open("validation_report.txt", "w") as f:
-            f.write(report)
-        
-        # Print report
-        print(report)
-        
-        # Return overall success
-        total_tests = sum(len(tests) for tests in self.results.values())
-        passed_tests = sum(sum(tests.values()) for tests in self.results.values())
-        success_rate = (passed_tests / total_tests * 100) if total_tests > 0 else 0
-        
-        return success_rate >= 90
-
-
-def main():
-    """Main execution function"""
-    print("VIBEAI Voice Bot - Milestone 1 & 2 Validation")
-    print("=" * 50)
+# Configuration
+@dataclass
+class Config:
+    # 3CX Settings
+    server: str = os.getenv('THREECX_SERVER', 'mtipbx.ny.3cx.us')
+    port: int = int(os.getenv('THREECX_PORT', '5060'))
+    extension: str = os.getenv('THREECX_EXTENSION', '1600')
+    password: str = os.getenv('THREECX_PASSWORD', '')
+    auth_id: str = os.getenv('THREECX_AUTH_ID', '')
+    realm: str = "3CXPhoneSystem"
     
-    try:
-        validator = MilestoneValidator()
-        success = validator.run_all_tests()
-        
-        if success:
-            print("\n🎉 VALIDATION SUCCESSFUL!")
-            print("Ready to deploy production voice bot.")
-            return 0
-        else:
-            print("\n❌ VALIDATION FAILED!")
-            print("Please fix the issues above before deployment.")
-            return 1
-            
-    except KeyboardInterrupt:
-        print("\n\nValidation interrupted by user.")
-        return 1
-    except Exception as e:
-        print(f"\n\nUnexpected error during validation: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-
-
-if __name__ == "__main__":
-    sys.exit(main()) Load .env if exists
-        if os.path.exists(".env"):
-            from dotenv import load_dotenv
-            load_dotenv()
-            
-            required_vars = [
-                "THREECX_SERVER", "THREECX_EXTENSION", 
-                "THREECX_AUTH_ID", "THREECX_PASSWORD"
-            ]
-            
-            for var in required_vars:
-                tests[f"ENV {var}"] = os.getenv(var) is not None
-        
-        self.results["Environment"] = tests
-        
-        for test, result in tests.items():
-            status = "PASS" if result else "FAIL"
-            self.log(f"  {test}: {status}")
-            
-        return all(tests.values())
+    # Audio Settings
+    sample_rate: int = 8000
+    channels: int = 1
+    frame_size: int = 160  # 20ms at 8kHz
+    vad_aggressiveness: int = int(os.getenv('VAD_AGGRESSIVENESS', '2'))
     
-    def test_dependencies(self):
-        """Test all required dependencies"""
-        self.log("Testing dependencies...")
-        
-        tests = {}
-        
-        # Core ML libraries
-        try:
-            import numpy as np
-            tests["NumPy"] = True
-            self.log(f"  NumPy {np.__version__}: PASS")
-        except ImportError as e:
-            tests["NumPy"] = False
-            self.log(f"  NumPy: FAIL - {e}")
-        
-        try:
-            import torch
-            tests["PyTorch"] = True
-            self.log(f"  PyTorch {torch.__version__}: PASS")
-        except ImportError as e:
-            tests["PyTorch"] = False
-            self.log(f"  PyTorch: FAIL - {e}")
-        
-        # Audio processing
-        try:
-            import librosa
-            import soundfile
-            tests["Audio Processing"] = True
-            self.log("  Audio libraries: PASS")
-        except ImportError as e:
-            tests["Audio Processing"] = False
-            self.log(f"  Audio libraries: FAIL - {e}")
-        
-        # AI Models
-        try:
-            import whisper
-            tests["Whisper"] = True
-            self.log("  Whisper: PASS")
-        except ImportError as e:
-            tests["Whisper"] = False
-            self.log(f"  Whisper: FAIL - {e}")
-        
-        try:
-            from TTS.api import TTS
-            tests["TTS"] = True
-            self.log("  TTS: PASS")
-        except ImportError as e:
-            tests["TTS"] = False
-            self.log(f"  TTS: FAIL - {e}")
-        
-        # SIP/VoIP
-        tests["PJSUA2"] = PJSUA2_AVAILABLE
-        status = "PASS" if PJSUA2_AVAILABLE else "FAIL"
-        self.log(f"  PJSUA2: {status}")
-        
-        # Web frameworks
-        try:
-            import requests
-            import flask
-            tests["Web Libraries"] = True
-            self.log("  Web libraries: PASS")
-        except ImportError as e:
-            tests["Web Libraries"] = False
-            self.log(f"  Web libraries: FAIL - {e}")
-        
-        self.results["Dependencies"] = tests
-        return all(tests.values())
+    # AI Models
+    whisper_model: str = os.getenv('WHISPER_MODEL', 'base')
+    ollama_url: str = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434/api/generate')
+    ollama_model: str = os.getenv('OLLAMA_MODEL', 'orca2:7b')
+    tts_model: str = os.getenv('TTS_MODEL', 'tts_models/en/ljspeech/tacotron2-DDC')
     
-    def test_ollama_connection(self):
-        """Test Ollama service and model availability"""
-        self.log("Testing Ollama connection...")
+    # Echo test
+    echo_extension: str = os.getenv('ECHO_EXTENSION', '*777')
+
+# Logging setup
+logging.basicConfig(
+    level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class AudioProcessor:
+    """Handles ALSA audio I/O and AI pipeline"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.capture_device = None
+        self.playback_device = None
+        self.vad = webrtcvad.Vad(config.vad_aggressiveness)
+        self.whisper_model = None
+        self.tts = None
+        self.audio_queue = queue.Queue()
+        self.speech_buffer = []
+        self.silence_frames = 0
+        self.silence_threshold = 8  # ~160ms at 20ms frames
+        self.is_speaking = False
+        self.running = False
         
-        tests = {}
-        
+    def initialize_ai_models(self):
+        """Initialize AI models"""
         try:
-            # Test service connectivity
-            response = requests.get("http://127.0.0.1:11434/api/tags", timeout=10)
-            tests["Service Connection"] = response.status_code == 200
+            logger.info(f"Loading Whisper model: {self.config.whisper_model}")
+            self.whisper_model = whisper.load_model(self.config.whisper_model)
             
-            if tests["Service Connection"]:
-                # Check available models
-                models_data = response.json()
-                models = [m.get("name", "") for m in models_data.get("models", [])]
+            logger.info(f"Loading TTS model: {self.config.tts_model}")
+            self.tts = TTS(self.config.tts_model)
+            
+            logger.info("AI models loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to load AI models: {e}")
+            raise
+            
+    def setup_alsa_devices(self, capture_dev: str, playback_dev: str):
+        """Setup ALSA capture and playback devices"""
+        try:
+            # Capture device (PBX → AI)
+            self.capture_device = alsaaudio.PCM(
+                alsaaudio.PCM_CAPTURE, 
+                alsaaudio.PCM_NONBLOCK,
+                device=capture_dev
+            )
+            self.capture_device.setchannels(self.config.channels)
+            self.capture_device.setrate(self.config.sample_rate)
+            self.capture_device.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+            self.capture_device.setperiodsize(self.config.frame_size)
+            
+            # Playback device (AI → PBX)
+            self.playback_device = alsaaudio.PCM(
+                alsaaudio.PCM_PLAYBACK,
+                alsaaudio.PCM_NONBLOCK,
+                device=playback_dev
+            )
+            self.playback_device.setchannels(self.config.channels)
+            self.playback_device.setrate(self.config.sample_rate)
+            self.playback_device.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+            self.playback_device.setperiodsize(self.config.frame_size)
+            
+            logger.info(f"ALSA devices configured: capture={capture_dev}, playback={playback_dev}")
+            
+        except Exception as e:
+            logger.error(f"Failed to setup ALSA devices: {e}")
+            raise
+            
+    def start_audio_processing(self):
+        """Start audio processing thread"""
+        self.running = True
+        self.audio_thread = threading.Thread(target=self._audio_loop, daemon=True)
+        self.audio_thread.start()
+        logger.info("Audio processing started")
+        
+    def stop_audio_processing(self):
+        """Stop audio processing"""
+        self.running = False
+        if hasattr(self, 'audio_thread'):
+            self.audio_thread.join(timeout=2)
+        logger.info("Audio processing stopped")
+        
+    def _audio_loop(self):
+        """Main audio processing loop"""
+        while self.running:
+            try:
+                # Read audio from capture device
+                length, data = self.capture_device.read()
                 
-                tests["ORCA2 Model"] = any("orca2" in model.lower() for model in models)
+                if length > 0:
+                    # Convert to numpy array
+                    audio_data = np.frombuffer(data, dtype=np.int16)
+                    
+                    # Ensure we have exactly 160 samples for VAD
+                    if len(audio_data) == self.config.frame_size:
+                        self._process_audio_frame(audio_data)
                 
-                if tests["ORCA2 Model"]:
-                    # Test model inference
-                    test_response = requests.post(
-                        "http://127.0.0.1:11434/api/generate",
-                        json={
-                            "model": "orca2:7b",
-                            "prompt": "Say hello in one word.",
-                            "stream": False,
-                            "options": {"num_predict": 10}
-                        },
-                        timeout=30
-                    )
-                    tests["Model Inference"] = test_response.status_code == 200
-                else:
-                    tests["Model Inference"] = False
+                time.sleep(0.01)  # Small sleep to prevent busy waiting
+                
+            except Exception as e:
+                logger.error(f"Audio processing error: {e}")
+                time.sleep(0.1)
+                
+    def _process_audio_frame(self, audio_frame: np.ndarray):
+        """Process a single audio frame with VAD"""
+        try:
+            # VAD requires bytes
+            frame_bytes = audio_frame.tobytes()
+            is_speech = self.vad.is_speech(frame_bytes, self.config.sample_rate)
+            
+            if is_speech:
+                self.speech_buffer.append(audio_frame)
+                self.silence_frames = 0
+                if not self.is_speaking:
+                    self.is_speaking = True
+                    logger.debug("Speech detected")
             else:
-                tests["ORCA2 Model"] = False
-                tests["Model Inference"] = False
-                
-        except requests.exceptions.ConnectionError:
-            tests["Service Connection"] = False
-            tests["ORCA2 Model"] = False
-            tests["Model Inference"] = False
-            self.log("  Ollama service not reachable")
+                if self.is_speaking:
+                    self.silence_frames += 1
+                    if self.silence_frames >= self.silence_threshold:
+                        # End of speech detected
+                        self._process_speech()
+                        self.is_speaking = False
+                        self.speech_buffer = []
+                        self.silence_frames = 0
+                        
         except Exception as e:
-            tests["Service Connection"] = False
-            tests["ORCA2 Model"] = False  
-            tests["Model Inference"] = False
-            self.log(f"  Ollama test error: {e}")
+            logger.error(f"VAD processing error: {e}")
+            
+    def _process_speech(self):
+        """Process collected speech through AI pipeline"""
+        if not self.speech_buffer:
+            return
+            
+        start_time = time.time()
         
-        self.results["Ollama"] = tests
-        
-        for test, result in tests.items():
-            status = "PASS" if result else "FAIL"
-            self.log(f"  {test}: {status}")
-        
-        return all(tests.values())
-    
-    def test_ai_models(self):
-        """Test AI model loading and inference"""
-        self.log("Testing AI models...")
-        
-        tests = {}
-        
-        # Test Whisper
         try:
-            self.log("  Loading Whisper model...")
-            model = whisper.load_model("base")
+            # Concatenate speech buffer
+            speech_audio = np.concatenate(self.speech_buffer)
+            logger.debug(f"Processing speech: {len(speech_audio)} samples")
             
-            # Test with silence
-            test_audio = np.zeros(16000, dtype=np.float32)
-            result = model.transcribe(test_audio)
-            
-            tests["Whisper Loading"] = True
-            tests["Whisper Inference"] = True
-            self.log("  Whisper: PASS")
-            
-        except Exception as e:
-            tests["Whisper Loading"] = False
-            tests["Whisper Inference"] = False
-            self.log(f"  Whisper: FAIL - {e}")
-        
-        # Test TTS
-        try:
-            self.log("  Loading TTS model...")
-            tts = TTS(
-                model_name="tts_models/en/ljspeech/tacotron2-DDC",
-                gpu=torch.cuda.is_available(),
-                progress_bar=False
+            # STT: Upsample to 16kHz for Whisper
+            speech_16k = librosa.resample(
+                speech_audio.astype(np.float32) / 32768.0,
+                orig_sr=self.config.sample_rate,
+                target_sr=16000
             )
             
-            # Test synthesis
-            wav = tts.tts(text="Hello world")
+            # Whisper transcription
+            stt_start = time.time()
+            result = self.whisper_model.transcribe(speech_16k)
+            text = result['text'].strip()
+            stt_time = time.time() - stt_start
             
-            tests["TTS Loading"] = True
-            tests["TTS Inference"] = len(wav) > 0
-            self.log("  TTS: PASS")
+            if not text:
+                logger.debug("Empty transcription, skipping")
+                return
+                
+            logger.info(f"STT ({stt_time:.2f}s): {text}")
+            
+            # LLM processing
+            llm_start = time.time()
+            response = self._get_llm_response(text)
+            llm_time = time.time() - llm_start
+            
+            if not response:
+                logger.warning("Empty LLM response")
+                return
+                
+            logger.info(f"LLM ({llm_time:.2f}s): {response}")
+            
+            # TTS generation
+            tts_start = time.time()
+            self._generate_and_play_tts(response)
+            tts_time = time.time() - tts_start
+            
+            total_time = time.time() - start_time
+            logger.info(f"Turn completed - STT: {stt_time:.2f}s, LLM: {llm_time:.2f}s, TTS: {tts_time:.2f}s, Total: {total_time:.2f}s")
             
         except Exception as e:
-            tests["TTS Loading"] = False
-            tests["TTS Inference"] = False
-            self.log(f"  TTS: FAIL - {e}")
-        
-        self.results["AI Models"] = tests
-        return all(tests.values())
-    
-    def test_network_connectivity(self):
-        """Test network connectivity to 3CX server"""
-        self.log("Testing network connectivity...")
-        
-        tests = {}
-        
-        # Load config
-        server = os.getenv("THREECX_SERVER", "mtipbx.ny.3cx.us")
-        port = int(os.getenv("THREECX_PORT", "5060"))
-        
-        # Test DNS resolution
+            logger.error(f"Speech processing error: {e}")
+            
+    def _get_llm_response(self, text: str) -> str:
+        """Get response from Ollama LLM"""
         try:
-            import socket
-            socket.gethostbyname(server)
-            tests["DNS Resolution"] = True
-            self.log(f"  DNS resolution for {server}: PASS")
-        except Exception:
-            tests["DNS Resolution"] = False
-            self.log(f"  DNS resolution for {server}: FAIL")
-        
-        # Test port connectivity
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(5)
-            result = sock.connect_ex((server, port))
-            sock.close()
-            tests["Port Connectivity"] = True  # UDP doesn't give reliable connect results
-            self.log(f"  Port connectivity to {server}:{port}: PASS")
-        except Exception:
-            tests["Port Connectivity"] = False
-            self.log(f"  Port connectivity to {server}:{port}: FAIL")
-        
-        # Test audio system
-        try:
-            import subprocess
-            result = subprocess.run(['lsmod'], capture_output=True, text=True)
-            tests["ALSA Loopback"] = 'snd_aloop' in result.stdout
+            prompt = f"You are a helpful AI assistant. Give a brief, conversational response (2-3 sentences max) to: {text}"
             
-            if not tests["ALSA Loopback"]:
-                self.log("  ALSA loopback module not loaded")
-                try:
-                    subprocess.run(['sudo', 'modprobe', 'snd-aloop'], check=True)
-                    tests["ALSA Loopback"] = True
-                    self.log("  ALSA loopback loaded: PASS")
-                except:
-                    self.log("  ALSA loopback loading: FAIL")
-            else:
-                self.log("  ALSA loopback: PASS")
-                
-        except Exception:
-            tests["ALSA Loopback"] = False
-            self.log("  ALSA loopback: FAIL")
-        
-        self.results["Network"] = tests
-        return all(tests.values())
-    
-    def test_pjsua2_initialization(self):
-        """Test PJSUA2 initialization without segfaults"""
-        self.log("Testing PJSUA2 initialization...")
-        
-        if not PJSUA2_AVAILABLE:
-            self.log("  PJSUA2 not available, skipping")
-            self.results["PJSUA2"] = {"Available": False}
-            return False
-        
-        tests = {}
-        
-        try:
-            # Test basic initialization
-            ep = pj.Endpoint()
-            ep.libCreate()
+            payload = {
+                "model": self.config.ollama_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.7,
+                    "num_predict": 100  # Limit response length
+                }
+            }
             
-            ep_config = pj.EpConfig()
-            ep_config.logConfig.level = 0  # Minimal logging
-            ep_config.logConfig.msgLogging = False
+            response = requests.post(self.config.ollama_url, json=payload, timeout=30)
+            response.raise_for_status()
             
-            ep.libInit(ep_config)
-            
-            # Test transport creation
-            transport_config = pj.TransportConfig()
-            transport_config.port = 0
-            transport = ep.transportCreate(pj.PJSIP_TRANSPORT_UDP, transport_config)
-            
-            ep.libStart()
-            
-            # Test audio device manager
-            aud_dev_mgr = ep.audDevManager()
-            aud_dev_mgr.setNullDev()  # Use null device for testing
-            
-            tests["Library Init"] = True
-            tests["Transport Create"] = True
-            tests["Audio Device"] = True
-            
-            # Clean shutdown
-            ep.libDestroy()
-            
-            self.log("  PJSUA2 initialization: PASS")
+            result = response.json()
+            return result.get('response', '').strip()
             
         except Exception as e:
-            tests["Library Init"] = False
-            tests["Transport Create"] = False
-            tests["Audio Device"] = False
-            self.log(f"  PJSUA2 initialization: FAIL - {e}")
-        
-        self.results["PJSUA2"] = tests
-        return all(tests.values())
-    
-    def test_production_script(self):
-        """Test the production voice bot script"""
-        self.log("Testing production script...")
-        
-        tests = {}
-        
-        # Check if script exists
-        script_path = "voice_bot_production.py"
-        tests["Script Exists"] = os.path.exists(script_path)
-        
-        if tests["Script Exists"]:
-            try:
-                # Test import without running
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("voice_bot", script_path)
-                module = importlib.util.module_from_spec(spec)
+            logger.error(f"LLM request error: {e}")
+            return "I'm sorry, I didn't catch that. Could you please repeat?"
+            
+    def _generate_and_play_tts(self, text: str):
+        """Generate TTS and play through ALSA"""
+        try:
+            # Generate TTS audio
+            tts_audio = self.tts.tts(text)
+            
+            # Convert to numpy array and resample to 8kHz
+            if isinstance(tts_audio, list):
+                tts_audio = np.array(tts_audio, dtype=np.float32)
                 
-                # This will test if the script can be imported without syntax errors
-                tests["Script Import"] = True
-                self.log("  Script import: PASS")
+            # Resample to 8kHz
+            tts_8k = librosa.resample(tts_audio, orig_sr=22050, target_sr=self.config.sample_rate)
+            
+            # Convert to int16
+            tts_int16 = (tts_8k * 32767).astype(np.int16)
+            
+            # Play in chunks of 160 samples
+            chunk_size = self.config.frame_size
+            for i in range(0, len(tts_int16), chunk_size):
+                chunk = tts_int16[i:i+chunk_size]
                 
-            except Exception as e:
-                tests["Script Import"] = False
-                self.log(f"  Script import: FAIL - {e}")
-        else:
-            tests["Script Import"] = False
-            self.log("  Production script not found")
-        
-        self.results["Production Script"] = tests
-        return all(tests.values())
-    
-    def generate_report(self):
-        """Generate comprehensive test report"""
-        duration = datetime.now() - self.start_time
-        
-        report = f"""
-============================================== 
-VIBEAI VOICE BOT - MILESTONE 1 & 2 VALIDATION
-==============================================
-Test Duration: {duration.total_seconds():.1f} seconds
-Test Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}
+                # Pad last chunk if necessary
+                if len(chunk) < chunk_size:
+                    chunk = np.pad(chunk, (0, chunk_size - len(chunk)))
+                
+                # Write to playback device
+                self.playback_device.write(chunk.tobytes())
+                time.sleep(0.02)  # 20ms delay to maintain pacing
+                
+        except Exception as e:
+            logger.error(f"TTS generation/playback error: {e}")
+            
+    def play_greeting(self):
+        """Play initial greeting"""
+        greeting = "Hello! I'm your AI assistant. How can I help you today?"
+        self._generate_and_play_tts(greeting)
 
-"""
-        
-        total_tests = 0
-        passed_tests = 0
-        
-        for category, tests in self.results.items():
-            report += f"\n{category.upper()} TESTS:\n"
-            report += "-" * (len(category) + 7) + "\n"
-            
-            for test_name, result in tests.items():
-                status = "PASS" if result else "FAIL"
-                report += f"  {test_name:25} : {status}\n"
-                total_tests += 1
-                if result:
-                    passed_tests += 1
-        
-        success_rate = (passed_tests / total_tests * 100) if total_tests > 0 else 0
-        
-        report += f"\n=============================================="
-        report += f"\nOVERALL RESULTS:"
-        report += f"\n=============================================="
-        report += f"\nTests Passed: {passed_tests}/{total_tests}"
-        report += f"\nSuccess Rate: {success_rate:.1f}%"
-        
-        if success_rate >= 90:
-            report += f"\n\nSTATUS: READY FOR PRODUCTION ✓"
-            report += f"\nMilestones 1 & 2: COMPLETE"
-        elif success_rate >= 75:
-            report += f"\n\nSTATUS: MOSTLY READY - Minor issues to resolve"
-        else:
-            report += f"\n\nSTATUS: NOT READY - Critical issues need fixing"
-        
-        report += f"\n\nNEXT STEPS:"
-        
-        if success_rate >= 90:
-            report += f"\n1. Run: ./startup_script.sh start"
-            report += f"\n2. Test incoming calls to extension {os.getenv('THREECX_EXTENSION', '1600')}"
-            report += f"\n3. Monitor logs: tail -f voice_bot.log"
-        else:
-            report += f"\n1. Fix failing tests above"
-            report += f"\n2. Re-run validation: python milestone_validator.py"
-            report += f"\n3. Check dependency installation scripts"
-        
-        report += f"\n=============================================="
-        
-        return report
+class VoiceBotAccount(pj.Account):
+    """Custom Account class for handling SIP events"""
     
-    def run_all_tests(self):
-        """Run all validation tests"""
-        self.log("Starting VIBEAI Voice Bot validation...")
+    def __init__(self, voicebot):
+        pj.Account.__init__(self)
+        self.voicebot = voicebot
         
-        test_methods = [
-            self.test_environment,
-            self.test_dependencies,
-            self.test_ollama_connection,
-            self.test_ai_models,
-            self.test_network_connectivity,
-            self.test_pjsua2_initialization,
-            self.test_production_script
-        ]
+    def onRegState(self, prm):
+        logger.info(f"Registration state: {prm.code} - {prm.reason}")
         
-        for test_method in test_methods:
+    def onIncomingCall(self, prm):
+        call = VoiceBotCall(self.voicebot, self, prm.callId)
+        call_info = call.getInfo()
+        logger.info(f"Incoming call from: {call_info.remoteUri}")
+        
+        # Auto-answer
+        call_prm = pj.CallOpParam()
+        call_prm.statusCode = 200
+        try:
+            call.answer(call_prm)
+            logger.info("Call answered automatically")
+        except Exception as e:
+            logger.error(f"Failed to answer call: {e}")
+
+class VoiceBotCall(pj.Call):
+    """Custom Call class for handling call events"""
+    
+    def __init__(self, voicebot, account, call_id=pj.PJSUA_INVALID_ID):
+        pj.Call.__init__(self, account, call_id)
+        self.voicebot = voicebot
+        self.media_connected = False
+        
+    def onCallState(self, prm):
+        call_info = self.getInfo()
+        state_name = {
+            pj.PJSIP_INV_STATE_CALLING: "CALLING",
+            pj.PJSIP_INV_STATE_INCOMING: "INCOMING", 
+            pj.PJSIP_INV_STATE_EARLY: "EARLY",
+            pj.PJSIP_INV_STATE_CONNECTING: "CONNECTING",
+            pj.PJSIP_INV_STATE_CONFIRMED: "CONFIRMED",
+            pj.PJSIP_INV_STATE_DISCONNECTED: "DISCONNECTED"
+        }.get(call_info.state, f"UNKNOWN({call_info.state})")
+        
+        logger.info(f"Call state changed to: {state_name}")
+        
+        if call_info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
+            self.voicebot.audio_processor.stop_audio_processing()
+            
+    def onCallMediaState(self, prm):
+        call_info = self.getInfo()
+        logger.info(f"Media state: active={call_info.media[0].status}")
+        
+        if (call_info.media[0].status == pj.PJSUA_CALL_MEDIA_ACTIVE and 
+            not self.media_connected):
+            
             try:
-                test_method()
-            except KeyboardInterrupt:
-                self.log("Validation interrupted by user")
-                break
+                # Get media objects
+                call_media = self.getMedia(0)
+                aud_dev_mgr = pj.Endpoint.instance().audDevManager()
+                
+                # Get capture and playback media ports
+                capture_port = aud_dev_mgr.getCaptureDevMedia()
+                playback_port = aud_dev_mgr.getPlaybackDevMedia()
+                
+                # Connect audio paths
+                # Call media to playback (RTP → Loopback for AI to capture)
+                call_media.startTransmit(playback_port)
+                # Capture to call media (AI TTS → RTP)
+                capture_port.startTransmit(call_media)
+                
+                logger.info("Audio media connected successfully")
+                self.media_connected = True
+                
+                # Start AI processing and play greeting
+                self.voicebot.audio_processor.start_audio_processing()
+                threading.Timer(1.0, self.voicebot.audio_processor.play_greeting).start()
+                
             except Exception as e:
-                self.log(f"Unexpected error in {test_method.__name__}: {e}", "ERROR")
+                logger.error(f"Failed to connect media: {e}")
+
+class VoiceBot:
+    """Main VoiceBot class"""
+    
+    def __init__(self, config: Config):
+        self.config = config
+        self.endpoint = None
+        self.account = None
+        self.transport = None
+        self.audio_processor = AudioProcessor(config)
+        self.running = False
         
-        #
+    def find_loopback_devices(self) -> Tuple[Optional[int], Optional[int]]:
+        """Find ALSA Loopback devices in pjsua2 device list"""
+        try:
+            aud_dev_mgr = self.endpoint.audDevManager()
+            device_count = aud_dev_mgr.getDevCount()
+            
+            capture_dev_id = None
+            playback_dev_id = None
+            
+            logger.info("Available audio devices:")
+            for i in range(device_count):
+                dev_info = aud_dev_mgr.getDevInfo(i)
+                logger.info(f"  {i}: {dev_info.name} (in:{dev_info.inputCount}, out:{dev_info.outputCount})")
+                
+                if "Loopback" in dev_info.name:
+                    if dev_info.inputCount > 0 and capture_dev_id is None:
+                        capture_dev_id = i
+                    if dev_info.outputCount > 0 and playback_dev_id is None:
+                        playback_dev_id = i
+                        
+            if capture_dev_id is None or playback_dev_id is None:
+                logger.error("Could not find suitable Loopback devices")
+                return None, None
+                
+            # Get device info for logging
+            cap_info = aud_dev_mgr.getDevInfo(capture_dev_id)
+            pb_info = aud_dev_mgr.getDevInfo(playback_dev_id)
+            
+            logger.info(f"Selected devices - Capture: {cap_info.name}, Playback: {pb_info.name}")
+            
+            return capture_dev_id, playback_dev_id
+            
+        except Exception as e:
+            logger.error(f"Error finding Loopback devices: {e}")
+            return None, None
+            
+    def initialize_pjsua2(self, dry_run: bool = False) -> bool:
+        """Initialize PJSUA2 endpoint and account"""
+        try:
+            # Create endpoint
+            self.endpoint = pj.Endpoint()
+            self.endpoint.libCreate()
+            
+            # Initialize endpoint
+            ep_cfg = pj.EpConfig()
+            ep_cfg.logConfig.level = 3
+            ep_cfg.logConfig.consoleLevel = 3
+            
+            # Media config
+            ep_cfg.medConfig.clockRate = self.config.sample_rate
+            ep_cfg.medConfig.audioFramePtime = 20  # 20ms frames
+            ep_cfg.medConfig.ecOptions = pj.PJMEDIA_ECHO_CANCEL
+            
+            self.endpoint.libInit(ep_cfg)
+            
+            # Find and configure audio devices
+            capture_id, playback_id = self.find_loopback_devices()
+            if capture_id is None or playback_id is None:
+                logger.error("Failed to find Loopback devices - check snd-aloop module")
+                return False
+                
+            # Set audio devices in pjsua2
+            aud_dev_mgr = self.endpoint.audDevManager()
+            aud_dev_mgr.setCaptureDevId(capture_id)
+            aud_dev_mgr.setPlaybackDevId(playback_id)
+            
+            # Setup ALSA devices for direct I/O
+            # Note: We use opposite mapping for direct ALSA access
+            # pjsua2 playback goes to Loopback,1,0 so we capture from there
+            # pjsua2 capture comes from Loopback,0,0 so we write TTS there
+            self.audio_processor.setup_alsa_devices("hw:Loopback,1,0", "hw:Loopback,0,0")
+            
+            if not dry_run:
+                # Initialize AI models
+                self.audio_processor.initialize_ai_models()
+            
+            # Create UDP transport
+            transport_cfg = pj.TransportConfig()
+            transport_cfg.port = 0  # Any available port
+            self.transport = self.endpoint.transportCreate(pj.PJSIP_TRANSPORT_UDP, transport_cfg)
+            
+            # Start library
+            self.endpoint.libStart()
+            logger.info("PJSUA2 initialized successfully")
+            
+            if dry_run:
+                logger.info("Dry run mode - skipping account registration")
+                return True
+            
+            # Create and configure account
+            self.account = VoiceBotAccount(self)
+            acc_cfg = pj.AccountConfig()
+            acc_cfg.idUri = f"sip:{self.config.extension}@{self.config.server}"
+            acc_cfg.regConfig.registrarUri = f"sip:{self.config.server}:{self.config.port}"
+            
+            # Authentication
+            cred = pj.AuthCredInfo()
+            cred.scheme = "digest"
+            cred.realm = self.config.realm
+            cred.username = self.config.auth_id
+            cred.data = self.config.password
+            acc_cfg.sipConfig.authCreds.append(cred)
+            
+            # Create account
+            self.account.create(acc_cfg)
+            
+            logger.info(f"Account created for {self.config.extension}@{self.config.server}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize PJSUA2: {e}")
+            return False
+            
+    def start(self, dry_run: bool = False):
+        """Start the voice bot"""
+        logger.info("Starting 3CX Voice Bot...")
+        
+        if not self.initialize_pjsua2(dry_run):
+            logger.error("Failed to initialize - exiting")
+            return False
+            
+        if dry_run:
+            logger.info("Dry run completed successfully")
+            self.shutdown()
+            return True
+            
+        self.running = True
+        logger.info("Voice bot started successfully")
+        logger.info(f"Registered as extension {self.config.extension}")
+        logger.info("Waiting for incoming calls...")
+        
+        return True
+        
+    def make_echo_test_call(self):
+        """Make a test call to echo service"""
+        if not self.account:
+            logger.error("No account available for outbound call")
+            return
+            
+        try:
+            call = VoiceBotCall(self, self.account)
+            call_prm = pj.CallOpParam()
+            call_prm.opt.audioCount = 1
+            call_prm.opt.videoCount = 0
+            
+            dest_uri = f"sip:{self.config.echo_extension}@{self.config.server}"
+            call.makeCall(dest_uri, call_prm)
+            logger.info(f"Echo test call initiated to {dest_uri}")
+            
+        except Exception as e:
+            logger.error(f"Failed to make echo test call: {e}")
+            
+    def shutdown(self):
+        """Clean shutdown"""
+        logger.info("Shutting down voice bot...")
+        self.running = False
+        
+        try:
+            if self.audio_processor:
+                self.audio_processor.stop_audio_processing()
+                
+            if self.endpoint:
+                # Hangup all calls
+                self.endpoint.hangupAllCalls()
+                time.sleep(2)  # Give time for cleanup
+                
+                # Destroy library
+                self.endpoint.libDestroy()
+                
+        except Exception as e:
+            logger.error(f"Shutdown error: {e}")
+            
+        logger.info("Voice bot stopped")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    global bot
+    if bot:
+        bot.shutdown()
+    sys.exit(0)
+
+def validate_environment():
+    """Validate required environment variables"""
+    required_vars = ['THREECX_PASSWORD', 'THREECX_AUTH_ID']
+    missing = [var for var in required_vars if not os.getenv(var)]
+    
+    if missing:
+        logger.error(f"Missing required environment variables: {missing}")
+        logger.error("Please check your .env file")
+        return False
+        
+    return True
+
+def check_loopback_module():
+    """Check if snd-aloop module is loaded"""
+    try:
+        result = subprocess.run(['lsmod'], capture_output=True, text=True)
+        if 'snd_aloop' not in result.stdout:
+            logger.error("snd-aloop module not loaded")
+            logger.error("Run: sudo modprobe snd-aloop")
+            return False
+        return True
+    except Exception as e:
+        logger.warning(f"Could not check snd-aloop module: {e}")
+        return True  # Assume it's okay
+
+def main():
+    parser = argparse.ArgumentParser(description='3CX AI Voice Bot')
+    parser.add_argument('--dry-run', action='store_true', 
+                       help='Initialize and validate environment without starting AI processing')
+    parser.add_argument('--echo-test', action='store_true',
+                       help='Make a test call to echo service (*777)')
+    args = parser.parse_args()
+    
+    # Validate environment
+    if not validate_environment():
+        return 1
+        
+    if not check_loopback_module():
+        return 1
+    
+    # Create config and bot
+    config = Config()
+    global bot
+    bot = VoiceBot(config)
+    
+    # Setup signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    try:
+        # Start the bot
+        if not bot.start(dry_run=args.dry_run):
+            return 1
+            
+        if args.dry_run:
+            return 0
+            
+        # Handle echo test
+        if args.echo_test:
+            time.sleep(3)  # Wait for registration
+            bot.make_echo_test_call()
+        
+        # Keep running
+        while bot.running:
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return 1
+    finally:
+        bot.shutdown()
+        
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
