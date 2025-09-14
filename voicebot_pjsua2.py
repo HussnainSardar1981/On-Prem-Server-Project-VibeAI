@@ -76,22 +76,37 @@ class AudioDeviceManager:
     """Manages ALSA Loopback device selection and validation"""
     
     def __init__(self, audio_config: AudioConfig):
+        logger.info("AudioDeviceManager.__init__: Starting initialization...")
         self.config = audio_config
         self.capture_dev = None
         self.playback_dev = None
         self.capture_stream = None
         self.playback_stream = None
-        self.pyaudio = pyaudio.PyAudio()
+        
+        logger.info("AudioDeviceManager.__init__: Creating PyAudio instance...")
+        try:
+            self.pyaudio = pyaudio.PyAudio()
+            logger.info("AudioDeviceManager.__init__: PyAudio instance created successfully")
+        except Exception as e:
+            logger.error(f"AudioDeviceManager.__init__: Failed to create PyAudio instance: {e}")
+            raise
+        logger.info("AudioDeviceManager.__init__: Initialization completed")
         
     def enumerate_devices(self) -> Tuple[Optional[int], Optional[int]]:
         """Enumerate and select ALSA Loopback devices"""
+        logger.info("=== ENUMERATE_DEVICES METHOD STARTED ===")
         logger.info("Enumerating audio devices...")
         
         capture_dev = None
         playback_dev = None
         
-        device_count = self.pyaudio.get_device_count()
-        logger.info(f"Found {device_count} audio devices")
+        logger.info("Getting device count from PyAudio...")
+        try:
+            device_count = self.pyaudio.get_device_count()
+            logger.info(f"Found {device_count} audio devices")
+        except Exception as e:
+            logger.error(f"Failed to get device count: {e}")
+            raise
         
         # First pass: find all loopback devices
         loopback_devices = []
@@ -1031,6 +1046,8 @@ class VoiceBot:
     def run(self, dry_run: bool = False) -> bool:
         """Main run method"""
         try:
+            logger.info("=== VOICEBOT RUN METHOD STARTED ===")
+            logger.info(f"Dry run mode: {dry_run}")
             logger.info("Starting Voice Bot...")
             
             # Initialize pjsua2
@@ -1042,7 +1059,10 @@ class VoiceBot:
             
             # Setup audio devices
             logger.info("Step 2: Setting up audio devices...")
-            if not self.setup_audio_devices():
+            logger.info("About to call self.setup_audio_devices()...")
+            setup_result = self.setup_audio_devices()
+            logger.info(f"setup_audio_devices() returned: {setup_result}")
+            if not setup_result:
                 logger.error("Step 2 FAILED: Audio device setup failed")
                 return False
             logger.info("Step 2 SUCCESS: Audio devices configured")
