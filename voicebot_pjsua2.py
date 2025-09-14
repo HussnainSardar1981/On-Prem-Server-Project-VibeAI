@@ -983,19 +983,32 @@ class VoiceBot:
             logger.info("Starting Voice Bot...")
             
             # Initialize pjsua2
+            logger.info("Step 1: Initializing pjsua2...")
             if not self.initialize_pjsua2():
+                logger.error("Step 1 FAILED: pjsua2 initialization failed")
                 return False
+            logger.info("Step 1 SUCCESS: pjsua2 initialized")
             
             # Setup audio devices
+            logger.info("Step 2: Setting up audio devices...")
             if not self.setup_audio_devices():
+                logger.error("Step 2 FAILED: Audio device setup failed")
                 return False
+            logger.info("Step 2 SUCCESS: Audio devices configured")
             
             # Initialize AI pipeline
+            logger.info("Step 3: Initializing AI pipeline...")
             self.ai_pipeline = AIPipeline(self.config)
             if not self.ai_pipeline.initialize_models():
+                logger.error("Step 3 FAILED: AI pipeline initialization failed")
                 return False
+            logger.info("Step 3 SUCCESS: AI pipeline initialized")
             
             if dry_run:
+                logger.info("=== DRY RUN SUCCESS ===")
+                logger.info("✓ pjsua2 initialized successfully")
+                logger.info("✓ Audio devices configured successfully") 
+                logger.info("✓ AI pipeline initialized successfully")
                 logger.info("Dry run completed successfully - all components initialized")
                 return True
             
