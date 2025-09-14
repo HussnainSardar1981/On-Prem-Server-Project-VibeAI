@@ -131,6 +131,9 @@ def test_audio_format():
         # Test by trying to open streams (simpler approach)
         logger.info("Testing 8kHz mono S16LE format by opening streams...")
         
+        input_success = False
+        output_success = False
+        
         # Test input stream
         try:
             input_stream = p.open(
@@ -142,6 +145,7 @@ def test_audio_format():
             )
             input_stream.close()
             logger.info("✓ Input stream test passed")
+            input_success = True
         except Exception as e:
             logger.warning(f"Input stream test failed: {e}")
         
@@ -156,12 +160,19 @@ def test_audio_format():
             )
             output_stream.close()
             logger.info("✓ Output stream test passed")
+            output_success = True
         except Exception as e:
             logger.warning(f"Output stream test failed: {e}")
         
         p.terminate()
-        logger.info("✓ 8kHz mono S16LE format supported")
-        return True
+        
+        # Both input and output must work for the test to pass
+        if input_success and output_success:
+            logger.info("✓ 8kHz mono S16LE format supported")
+            return True
+        else:
+            logger.error("✗ Audio format test failed - not all streams could be opened")
+            return False
         
     except Exception as e:
         logger.error(f"Audio format test failed: {e}")
@@ -225,22 +236,37 @@ def main():
     
     passed = 0
     total = len(tests)
+    failed_tests = []
+    passed_tests = []
     
     for test_name, test_func in tests:
         logger.info(f"\n--- {test_name} ---")
         if test_func():
             passed += 1
+            passed_tests.append(test_name)
             logger.info(f"✓ {test_name} PASSED")
         else:
+            failed_tests.append(test_name)
             logger.error(f"✗ {test_name} FAILED")
     
+    # Show detailed results
     logger.info(f"\n=== Test Results: {passed}/{total} PASSED ===")
     
+    if passed_tests:
+        logger.info("\n✅ PASSED TESTS:")
+        for test in passed_tests:
+            logger.info(f"  ✓ {test}")
+    
+    if failed_tests:
+        logger.error("\n❌ FAILED TESTS:")
+        for test in failed_tests:
+            logger.error(f"  ✗ {test}")
+    
     if passed == total:
-        logger.info("All tests passed! Voice bot should work correctly.")
+        logger.info("\n🎉 All tests passed! Voice bot should work correctly.")
         return True
     else:
-        logger.error("Some tests failed. Please fix the issues before running the voice bot.")
+        logger.error(f"\n⚠️  {len(failed_tests)} test(s) failed. Please fix the issues before running the voice bot.")
         return False
 
 if __name__ == "__main__":
