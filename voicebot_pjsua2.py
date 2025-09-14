@@ -106,42 +106,39 @@ class AudioDeviceManager:
         if not loopback_devices:
             raise RuntimeError("No ALSA Loopback devices found. Ensure snd-aloop is loaded.")
         
-        # Second pass: select devices based on hw device numbers
+        # Simplified device selection - just pick the first available devices
+        logger.info("Selecting loopback devices...")
+        
         for i, info in loopback_devices:
             name = info['name'].lower()
             logger.info(f"Evaluating device {i}: {info['name']}")
             logger.info(f"  - Input channels: {info['maxInputChannels']}")
             logger.info(f"  - Output channels: {info['maxOutputChannels']}")
-            logger.info(f"  - Contains 'hw:0,1': {'hw:0,1' in name}")
-            logger.info(f"  - Contains 'hw:0,0': {'hw:0,0' in name}")
             
-            # Select capture device (PBX → us) - hw:0,1 (device 1)
-            if info['maxInputChannels'] > 0 and 'hw:0,1' in name and not capture_dev:
+            # Select first available input device
+            if info['maxInputChannels'] > 0 and not capture_dev:
                 capture_dev = i
                 logger.info(f"✓ Selected capture device: {info['name']}")
             
-            # Select playback device (us → PBX) - hw:0,0 (device 0)
-            if info['maxOutputChannels'] > 0 and 'hw:0,0' in name and not playback_dev:
+            # Select first available output device
+            if info['maxOutputChannels'] > 0 and not playback_dev:
                 playback_dev = i
                 logger.info(f"✓ Selected playback device: {info['name']}")
-        
-        # Fallback: if specific hw devices not found, use any available
-        if not capture_dev:
-            for i, info in loopback_devices:
-                if info['maxInputChannels'] > 0:
-                    capture_dev = i
-                    logger.info(f"Fallback capture device: {info['name']}")
-                    break
-        
-        if not playback_dev:
-            for i, info in loopback_devices:
-                if info['maxOutputChannels'] > 0:
-                    playback_dev = i
-                    logger.info(f"Fallback playback device: {info['name']}")
-                    break
+            
+            # If we have both, we can stop
+            if capture_dev is not None and playback_dev is not None:
+                break
         
         if not capture_dev or not playback_dev:
             raise RuntimeError(f"Could not find suitable ALSA Loopback devices. Found {len(loopback_devices)} loopback devices but missing input or output capability.")
+        
+        # Ensure we're not using the same device for both input and output
+        if capture_dev == playback_dev:
+            logger.warning("Same device selected for both input and output, this may cause issues")
+        
+        logger.info(f"Final device selection:")
+        logger.info(f"  - Capture device: {capture_dev} ({loopback_devices[capture_dev][1]['name']})")
+        logger.info(f"  - Playback device: {playback_dev} ({loopback_devices[playback_dev][1]['name']})")
         
         return capture_dev, playback_dev
     
