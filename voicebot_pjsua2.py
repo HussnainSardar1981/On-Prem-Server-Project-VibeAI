@@ -648,7 +648,7 @@ class VoiceBotCall(pj.Call):
         try:
             # Get media
             call_media = self.getMedia(0)
-            aud_dev_manager = pj.AudioDevManager.instance()
+            aud_dev_manager = pj.Endpoint.instance().audDevManager()
             
             # Get capture and playback media
             cap_media = aud_dev_manager.getCaptureDevMedia()
@@ -1081,11 +1081,15 @@ class VoiceBot:
                 logger.info("✓ Audio devices configured successfully") 
                 logger.info("✓ AI pipeline initialized successfully")
                 logger.info("Dry run completed successfully - all components initialized")
+                logger.info("NOTE: Dry run does NOT test SIP registration or audio bridging!")
                 return True
             
             # Register with 3CX
+            logger.info("Step 4: Registering with 3CX...")
             if not self.register_account():
+                logger.error("Step 4 FAILED: SIP registration failed")
                 return False
+            logger.info("Step 4 SUCCESS: SIP registration completed")
             
             # Set call handler
             self.endpoint.setCallHandler(VoiceBotCall)
@@ -1149,6 +1153,8 @@ def main():
     parser = argparse.ArgumentParser(description='3CX Voice Bot with pjsua2')
     parser.add_argument('--dry-run', action='store_true', 
                        help='Initialize components without starting call processing')
+    parser.add_argument('--init-only', action='store_true',
+                       help='Initialize all components including SIP registration, then exit')
     parser.add_argument('--test-call', action='store_true',
                        help='Make a test call to echo service')
     parser.add_argument('--extension', default='*777',
@@ -1164,6 +1170,16 @@ def main():
     
     if args.dry_run:
         success = voice_bot.run(dry_run=True)
+    elif args.init_only:
+        logger.info("=== INIT-ONLY MODE ===")
+        logger.info("This will test SIP registration and audio device configuration")
+        success = voice_bot.run()
+        if success:
+            logger.info("=== INIT-ONLY SUCCESS ===")
+            logger.info("✓ All components initialized successfully")
+            logger.info("✓ SIP registration completed")
+            logger.info("✓ Audio bridging can be tested with incoming calls")
+            voice_bot.cleanup()
     elif args.test_call:
         success = voice_bot.run(dry_run=True)
         if success:
