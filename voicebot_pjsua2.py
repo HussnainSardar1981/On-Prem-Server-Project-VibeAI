@@ -749,35 +749,86 @@ class VoiceBot:
             return False
     
     def setup_audio_devices(self) -> bool:
-        """Setup ALSA Loopback audio devices"""
+        """Setup ALSA Loopback audio devices with enhanced debugging"""
+        logger.info("=== STARTING AUDIO DEVICE SETUP ===")
+        
         try:
-            logger.info("Setting up audio devices...")
+            logger.info("Step 2.1: Testing basic PyAudio initialization...")
+            try:
+                import pyaudio
+                pa = pyaudio.PyAudio()
+                count = pa.get_device_count()
+                logger.info(f"PyAudio basic test: {count} devices found")
+                pa.terminate()
+                logger.info("Step 2.1 SUCCESS: PyAudio basic test passed")
+            except Exception as pa_error:
+                logger.error(f"Step 2.1 FAILED: PyAudio basic test failed: {pa_error}")
+                raise
+            
+            logger.info("Step 2.2: Creating AudioDeviceManager...")
             
             # Initialize audio manager
             self.audio_manager = AudioDeviceManager(self.audio_config)
+            logger.info("Step 2.2 SUCCESS: AudioDeviceManager created")
             
-            # Enumerate and select devices
-            capture_dev, playback_dev = self.audio_manager.enumerate_devices()
+            logger.info("Step 2.3: Enumerating devices...")
+            
+            # Enumerate and select devices - wrap in try/catch for debugging
+            try:
+                capture_dev, playback_dev = self.audio_manager.enumerate_devices()
+                logger.info(f"Step 2.3 SUCCESS: Devices enumerated - capture: {capture_dev}, playback: {playback_dev}")
+            except Exception as enum_error:
+                logger.error(f"Step 2.3 FAILED: Device enumeration failed: {enum_error}")
+                logger.error(f"Exception type: {type(enum_error)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                raise  # Re-raise to see full stack trace
+            
+            logger.info("Step 2.4: Configuring pjsua2 audio devices...")
             
             # Configure pjsua2 audio devices BEFORE initializing PyAudio streams
             try:
                 aud_dev_manager = pj.Endpoint.instance().audDevManager()
+                logger.info(f"Got pjsua2 audio device manager")
+                
                 aud_dev_manager.setCaptureDev(capture_dev)
+                logger.info(f"Set capture device to {capture_dev}")
+                
                 aud_dev_manager.setPlaybackDev(playback_dev)
-                logger.info(f"pjsua2 audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
+                logger.info(f"Set playback device to {playback_dev}")
+                
+                logger.info(f"Step 2.4 SUCCESS: pjsua2 audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
             except Exception as pj_error:
-                logger.warning(f"Failed to configure pjsua2 audio devices: {pj_error}")
+                logger.warning(f"Step 2.4 WARNING: Failed to configure pjsua2 audio devices: {pj_error}")
+                logger.warning(f"Exception type: {type(pj_error)}")
                 # Continue anyway - PyAudio might still work
             
-            # Initialize PyAudio streams AFTER pjsua2 configuration
-            if not self.audio_manager.initialize_streams(capture_dev, playback_dev):
-                raise RuntimeError("Failed to initialize audio streams")
+            logger.info("Step 2.5: Initializing PyAudio streams...")
             
-            logger.info(f"Audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
+            # Initialize PyAudio streams AFTER pjsua2 configuration
+            try:
+                stream_result = self.audio_manager.initialize_streams(capture_dev, playback_dev)
+                if not stream_result:
+                    logger.error("Step 2.5 FAILED: initialize_streams returned False")
+                    raise RuntimeError("Failed to initialize audio streams")
+                logger.info("Step 2.5 SUCCESS: PyAudio streams initialized")
+            except Exception as stream_error:
+                logger.error(f"Step 2.5 FAILED: Stream initialization failed: {stream_error}")
+                logger.error(f"Exception type: {type(stream_error)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                raise  # Re-raise to see full stack trace
+            
+            logger.info(f"=== AUDIO DEVICE SETUP COMPLETE ===")
+            logger.info(f"Final configuration - Capture: {capture_dev}, Playback: {playback_dev}")
             return True
             
         except Exception as e:
-            logger.error(f"Audio device setup failed: {e}")
+            logger.error(f"=== AUDIO DEVICE SETUP FAILED ===")
+            logger.error(f"Error: {e}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return False
     
     def register_account(self) -> bool:
