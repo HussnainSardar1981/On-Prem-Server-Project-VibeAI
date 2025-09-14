@@ -723,7 +723,7 @@ class VoiceBot:
             
             # Configure pjsua2 audio devices BEFORE initializing PyAudio streams
             try:
-                aud_dev_manager = pj.AudioDevManager.instance()
+                aud_dev_manager = pj.Endpoint.instance().audDevManager()
                 aud_dev_manager.setCaptureDev(capture_dev)
                 aud_dev_manager.setPlaybackDev(playback_dev)
                 logger.info(f"pjsua2 audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
