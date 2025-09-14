@@ -117,12 +117,12 @@ class AudioDeviceManager:
             logger.info(f"  - Output channels: {info['maxOutputChannels']}")
             
             # Look for hw:0,0 pattern (typically capture)
-            if 'hw:0,0' in name and info['maxInputChannels'] > 0 and not capture_dev:
+            if 'hw:0,0' in name and info['maxInputChannels'] > 0 and capture_dev is None:
                 capture_dev = i
                 logger.info(f"✓ Selected capture device: {info['name']} (hw:0,0)")
             
             # Look for hw:0,1 pattern (typically playback)
-            elif 'hw:0,1' in name and info['maxOutputChannels'] > 0 and not playback_dev:
+            elif 'hw:0,1' in name and info['maxOutputChannels'] > 0 and playback_dev is None:
                 playback_dev = i
                 logger.info(f"✓ Selected playback device: {info['name']} (hw:0,1)")
         
@@ -134,12 +134,12 @@ class AudioDeviceManager:
                 name = info['name'].lower()
                 
                 # Select first available input device
-                if info['maxInputChannels'] > 0 and not capture_dev:
+                if info['maxInputChannels'] > 0 and capture_dev is None:
                     capture_dev = i
                     logger.info(f"✓ Fallback capture device: {info['name']}")
                 
                 # Select first available output device
-                if info['maxOutputChannels'] > 0 and not playback_dev:
+                if info['maxOutputChannels'] > 0 and playback_dev is None:
                     playback_dev = i
                     logger.info(f"✓ Fallback playback device: {info['name']}")
                 
@@ -147,7 +147,14 @@ class AudioDeviceManager:
                 if capture_dev is not None and playback_dev is not None:
                     break
         
-        if not capture_dev or not playback_dev:
+        # CRITICAL FIX: Use 'is None' instead of 'not' to avoid treating device ID 0 as False
+        if capture_dev is None or playback_dev is None:
+            logger.error(f"Device selection failed!")
+            logger.error(f"  - capture_dev: {capture_dev}")
+            logger.error(f"  - playback_dev: {playback_dev}")
+            logger.error(f"  - Found {len(loopback_devices)} loopback devices")
+            for i, (dev_idx, dev_info) in enumerate(loopback_devices):
+                logger.error(f"    Device {i}: {dev_info['name']} (idx={dev_idx}) - I:{dev_info['maxInputChannels']}/O:{dev_info['maxOutputChannels']}")
             raise RuntimeError(f"Could not find suitable ALSA Loopback devices. Found {len(loopback_devices)} loopback devices but missing input or output capability.")
         
         # Ensure we're not using the same device for both input and output
@@ -175,7 +182,7 @@ class AudioDeviceManager:
             logger.info(f"  - Max Output Channels: {info['maxOutputChannels']}")
             logger.info(f"  - Default Sample Rate: {info['defaultSampleRate']}")
             
-            # For loopback devices, use lenient validation
+            # For loopback devices, use very lenient validation
             if 'loopback' in device_name.lower():
                 logger.info(f"  - Loopback device detected, using lenient validation")
                 
@@ -223,6 +230,10 @@ class AudioDeviceManager:
             
         except Exception as e:
             logger.error(f"Device validation failed for device {device_id}: {e}")
+            # For loopback devices, be extra lenient
+            if 'loopback' in str(e).lower():
+                logger.info(f"  - Allowing loopback device despite validation error")
+                return True
             return False
     
     def initialize_streams(self, capture_dev: int, playback_dev: int) -> bool:
@@ -230,16 +241,15 @@ class AudioDeviceManager:
         try:
             logger.info(f"Initializing audio streams: capture={capture_dev}, playback={playback_dev}")
             
-            # Validate devices first
-            if not self.validate_device_capabilities(capture_dev, True):
-                logger.error("Capture device validation failed")
-                # Try to continue anyway for loopback devices
-                logger.info("Attempting to continue with potentially incompatible capture device")
+            # Validate devices first (but be lenient for loopback devices)
+            capture_valid = self.validate_device_capabilities(capture_dev, True)
+            playback_valid = self.validate_device_capabilities(playback_dev, False)
             
-            if not self.validate_device_capabilities(playback_dev, False):
-                logger.error("Playback device validation failed")
-                # Try to continue anyway for loopback devices
-                logger.info("Attempting to continue with potentially incompatible playback device")
+            if not capture_valid:
+                logger.warning("Capture device validation failed, but attempting to continue")
+            
+            if not playback_valid:
+                logger.warning("Playback device validation failed, but attempting to continue")
             
             # Initialize capture stream with error handling
             try:
@@ -655,14 +665,16 @@ class VoiceBot:
             self.endpoint = pj.Endpoint()
             self.endpoint.libCreate()
             
-            # Configure logging and initialize
+            # Configure logging and initialize with robust error handling
             try:
                 # Try newer pjsua2 API with EpConfig
                 ep_cfg = pj.EpConfig()
                 ep_cfg.logConfig.level = 4  # INFO level
                 ep_cfg.logConfig.consoleLevel = 4
                 self.endpoint.libInit(ep_cfg)
-            except AttributeError:
+                logger.info("pjsua2 initialized with EpConfig")
+            except (AttributeError, TypeError) as e:
+                logger.warning(f"EpConfig approach failed: {e}")
                 try:
                     # Fallback: try with individual configs
                     ua_cfg = pj.UAConfig()
@@ -671,9 +683,17 @@ class VoiceBot:
                     log_cfg.consoleLevel = 4
                     media_cfg = pj.MediaConfig()
                     self.endpoint.libInit(ua_cfg, log_cfg, media_cfg)
-                except AttributeError:
-                    # Final fallback for older pjsua2 versions
-                    self.endpoint.libInit()
+                    logger.info("pjsua2 initialized with separate configs")
+                except (AttributeError, TypeError) as e2:
+                    logger.warning(f"Separate configs approach failed: {e2}")
+                    try:
+                        # Final fallback - minimal EpConfig
+                        ep_cfg = pj.EpConfig()
+                        self.endpoint.libInit(ep_cfg)
+                        logger.info("pjsua2 initialized with minimal EpConfig")
+                    except Exception as e3:
+                        logger.error(f"All pjsua2 initialization attempts failed: {e3}")
+                        raise RuntimeError(f"Failed to initialize pjsua2: {e3}")
             
             # Create UDP transport
             tcfg = pj.TransportConfig()
@@ -701,14 +721,19 @@ class VoiceBot:
             # Enumerate and select devices
             capture_dev, playback_dev = self.audio_manager.enumerate_devices()
             
-            # Initialize streams
+            # Configure pjsua2 audio devices BEFORE initializing PyAudio streams
+            try:
+                aud_dev_manager = pj.AudioDevManager.instance()
+                aud_dev_manager.setCaptureDev(capture_dev)
+                aud_dev_manager.setPlaybackDev(playback_dev)
+                logger.info(f"pjsua2 audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
+            except Exception as pj_error:
+                logger.warning(f"Failed to configure pjsua2 audio devices: {pj_error}")
+                # Continue anyway - PyAudio might still work
+            
+            # Initialize PyAudio streams AFTER pjsua2 configuration
             if not self.audio_manager.initialize_streams(capture_dev, playback_dev):
                 raise RuntimeError("Failed to initialize audio streams")
-            
-            # Configure pjsua2 audio devices
-            aud_dev_manager = pj.AudioDevManager.instance()
-            aud_dev_manager.setCaptureDev(capture_dev)
-            aud_dev_manager.setPlaybackDev(playback_dev)
             
             logger.info(f"Audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
             return True
