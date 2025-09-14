@@ -721,12 +721,18 @@ class VoiceBot:
             
             # Configure logging and initialize with robust error handling
             try:
-                # Try newer pjsua2 API with EpConfig
+                # Try newer pjsua2 API with EpConfig - use conservative settings
                 ep_cfg = pj.EpConfig()
                 ep_cfg.logConfig.level = 4  # INFO level
                 ep_cfg.logConfig.consoleLevel = 4
+                
+                # Conservative media config to prevent segfaults
+                ep_cfg.medConfig.hasIoqueue = False  # Disable I/O queue to prevent threading issues
+                ep_cfg.medConfig.threadCnt = 1      # Single media thread
+                ep_cfg.medConfig.clockRate = 8000   # Match 3CX sample rate
+                
                 self.endpoint.libInit(ep_cfg)
-                logger.info("pjsua2 initialized with EpConfig")
+                logger.info("pjsua2 initialized with conservative EpConfig")
             except (AttributeError, TypeError) as e:
                 logger.warning(f"EpConfig approach failed: {e}")
                 try:
@@ -802,22 +808,15 @@ class VoiceBot:
             
             logger.info("Step 2.4: Configuring pjsua2 audio devices...")
             
-            # Configure pjsua2 audio devices BEFORE initializing PyAudio streams
+            # SKIP pjsua2 audio device configuration to prevent segfaults
+            # Let pjsua2 use default devices and handle audio routing through PyAudio
             try:
-                aud_dev_manager = pj.Endpoint.instance().audDevManager()
-                logger.info(f"Got pjsua2 audio device manager")
-                
-                aud_dev_manager.setCaptureDev(capture_dev)
-                logger.info(f"Set capture device to {capture_dev}")
-                
-                aud_dev_manager.setPlaybackDev(playback_dev)
-                logger.info(f"Set playback device to {playback_dev}")
-                
-                logger.info(f"Step 2.4 SUCCESS: pjsua2 audio devices configured - Capture: {capture_dev}, Playback: {playback_dev}")
+                logger.info("Step 2.4: Skipping pjsua2 audio device configuration to prevent segfaults")
+                logger.info("pjsua2 will use default audio devices, PyAudio will handle ALSA Loopback")
+                logger.info(f"Step 2.4 SUCCESS: Using default pjsua2 audio, PyAudio manages Loopback devices")
             except Exception as pj_error:
-                logger.warning(f"Step 2.4 WARNING: Failed to configure pjsua2 audio devices: {pj_error}")
-                logger.warning(f"Exception type: {type(pj_error)}")
-                # Continue anyway - PyAudio might still work
+                logger.warning(f"Step 2.4 WARNING: Unexpected error: {pj_error}")
+                # Continue anyway
             
             logger.info("Step 2.5: Initializing PyAudio streams...")
             
@@ -1150,13 +1149,21 @@ class VoiceBot:
                 except Exception as e:
                     logger.warning(f"Error cleaning up audio streams: {e}")
             
-            # Step 3: Destroy pjsua2 endpoint
+            # Step 3: Destroy pjsua2 endpoint with extra safety
             if self.endpoint:
                 try:
                     logger.info("Destroying pjsua2 endpoint...")
+                    # Force garbage collection before destroying
+                    import gc
+                    gc.collect()
+                    
                     self.endpoint.libDestroy()
                     self.endpoint = None
-                    time.sleep(0.5)  # Give pjsua2 time to cleanup
+                    
+                    # Extra cleanup time and force GC again
+                    time.sleep(1.0)  # Longer wait for pjsua2 cleanup
+                    gc.collect()
+                    
                 except Exception as e:
                     logger.warning(f"Error destroying pjsua2: {e}")
             
