@@ -44,8 +44,11 @@ def test_pjsua2_devices():
         endpoint = pj.Endpoint()
         endpoint.libCreate()
         
-        # Basic initialization
-        endpoint.libInit()
+        # Basic initialization with proper configuration
+        ep_cfg = pj.EpConfig()
+        ep_cfg.logConfig.level = 4  # INFO level
+        ep_cfg.logConfig.consoleLevel = 4
+        endpoint.libInit(ep_cfg)
         endpoint.libStart()
         
         # Get audio device manager
