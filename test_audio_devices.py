@@ -45,10 +45,25 @@ def test_pjsua2_devices():
         endpoint.libCreate()
         
         # Basic initialization with proper configuration
-        ep_cfg = pj.EpConfig()
-        ep_cfg.logConfig.level = 4  # INFO level
-        ep_cfg.logConfig.consoleLevel = 4
-        endpoint.libInit(ep_cfg)
+        try:
+            # Try newer API with EpConfig
+            ep_cfg = pj.EpConfig()
+            ep_cfg.logConfig.level = 4  # INFO level
+            ep_cfg.logConfig.consoleLevel = 4
+            endpoint.libInit(ep_cfg)
+        except TypeError:
+            # Fallback for older API that requires separate configs
+            try:
+                ua_cfg = pj.UAConfig()
+                log_cfg = pj.LogConfig()
+                log_cfg.level = 4
+                log_cfg.consoleLevel = 4
+                media_cfg = pj.MediaConfig()
+                endpoint.libInit(ua_cfg, log_cfg, media_cfg)
+            except TypeError:
+                # Final fallback - try with minimal EpConfig
+                ep_cfg = pj.EpConfig()
+                endpoint.libInit(ep_cfg)
         endpoint.libStart()
         
         # Get audio device manager
