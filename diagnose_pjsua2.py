@@ -43,8 +43,38 @@ def diagnose_pjsua2():
             # Test different initialization methods
             logger.info("\nTesting initialization methods...")
             
-            # Method 1: No parameters
+            # Method 1: With EpConfig (newer API)
             try:
+                ep_cfg = pj.EpConfig()
+                endpoint.libInit(ep_cfg)
+                logger.info("✓ libInit(EpConfig) - SUCCESS")
+                endpoint.libDestroy()
+                return True
+            except Exception as e:
+                logger.info(f"✗ libInit(EpConfig) failed: {e}")
+            
+            # Method 2: With all configs
+            try:
+                endpoint = pj.Endpoint()
+                endpoint.libCreate()
+                ua_cfg = pj.UAConfig()
+                log_cfg = pj.LogConfig()
+                media_cfg = pj.MediaConfig()
+                ep_cfg = pj.EpConfig()
+                ep_cfg.uaConfig = ua_cfg
+                ep_cfg.logConfig = log_cfg
+                ep_cfg.mediaConfig = media_cfg
+                endpoint.libInit(ep_cfg)
+                logger.info("✓ libInit(EpConfig with all configs) - SUCCESS")
+                endpoint.libDestroy()
+                return True
+            except Exception as e:
+                logger.info(f"✗ libInit(EpConfig with all configs) failed: {e}")
+            
+            # Method 3: No parameters (older API)
+            try:
+                endpoint = pj.Endpoint()
+                endpoint.libCreate()
                 endpoint.libInit()
                 logger.info("✓ libInit() with no parameters - SUCCESS")
                 endpoint.libDestroy()
@@ -52,35 +82,9 @@ def diagnose_pjsua2():
             except Exception as e:
                 logger.info(f"✗ libInit() with no parameters failed: {e}")
             
-            # Method 2: With UAConfig
-            try:
-                endpoint = pj.Endpoint()
-                endpoint.libCreate()
-                ua_cfg = pj.UAConfig()
-                endpoint.libInit(ua_cfg)
-                logger.info("✓ libInit(UAConfig) - SUCCESS")
-                endpoint.libDestroy()
-                return True
-            except Exception as e:
-                logger.info(f"✗ libInit(UAConfig) failed: {e}")
-            
-            # Method 3: With all configs
-            try:
-                endpoint = pj.Endpoint()
-                endpoint.libCreate()
-                ua_cfg = pj.UAConfig()
-                log_cfg = pj.LogConfig()
-                media_cfg = pj.MediaConfig()
-                endpoint.libInit(ua_cfg, log_cfg, media_cfg)
-                logger.info("✓ libInit(UAConfig, LogConfig, MediaConfig) - SUCCESS")
-                endpoint.libDestroy()
-                return True
-            except Exception as e:
-                logger.info(f"✗ libInit(UAConfig, LogConfig, MediaConfig) failed: {e}")
-            
             # Method 4: Check if configs exist
             logger.info("\nChecking configuration classes...")
-            configs = ['UAConfig', 'LogConfig', 'MediaConfig', 'AccountConfig', 'TransportConfig']
+            configs = ['EpConfig', 'UAConfig', 'LogConfig', 'MediaConfig', 'AccountConfig', 'TransportConfig']
             for config in configs:
                 if hasattr(pj, config):
                     logger.info(f"✓ {config} available")
