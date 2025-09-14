@@ -93,26 +93,50 @@ class AudioDeviceManager:
         device_count = self.pyaudio.get_device_count()
         logger.info(f"Found {device_count} audio devices")
         
+        # First pass: find all loopback devices
+        loopback_devices = []
         for i in range(device_count):
             info = self.pyaudio.get_device_info_by_index(i)
             name = info['name'].lower()
             
-            # Look for Loopback devices
             if 'loopback' in name:
+                loopback_devices.append((i, info))
                 logger.info(f"Device {i}: {info['name']} - Inputs: {info['maxInputChannels']}, Outputs: {info['maxOutputChannels']}")
-                
-                # Select capture device (PBX → us)
-                if info['maxInputChannels'] > 0 and 'loopback,1' in name:
+        
+        if not loopback_devices:
+            raise RuntimeError("No ALSA Loopback devices found. Ensure snd-aloop is loaded.")
+        
+        # Second pass: select devices based on hw device numbers
+        for i, info in loopback_devices:
+            name = info['name'].lower()
+            
+            # Select capture device (PBX → us) - hw:0,1 (device 1)
+            if info['maxInputChannels'] > 0 and 'hw:0,1' in name and not capture_dev:
+                capture_dev = i
+                logger.info(f"Selected capture device: {info['name']}")
+            
+            # Select playback device (us → PBX) - hw:0,0 (device 0)
+            if info['maxOutputChannels'] > 0 and 'hw:0,0' in name and not playback_dev:
+                playback_dev = i
+                logger.info(f"Selected playback device: {info['name']}")
+        
+        # Fallback: if specific hw devices not found, use any available
+        if not capture_dev:
+            for i, info in loopback_devices:
+                if info['maxInputChannels'] > 0:
                     capture_dev = i
-                    logger.info(f"Selected capture device: {info['name']}")
-                
-                # Select playback device (us → PBX)
-                if info['maxOutputChannels'] > 0 and 'loopback,0' in name:
+                    logger.info(f"Fallback capture device: {info['name']}")
+                    break
+        
+        if not playback_dev:
+            for i, info in loopback_devices:
+                if info['maxOutputChannels'] > 0:
                     playback_dev = i
-                    logger.info(f"Selected playback device: {info['name']}")
+                    logger.info(f"Fallback playback device: {info['name']}")
+                    break
         
         if not capture_dev or not playback_dev:
-            raise RuntimeError("Could not find required ALSA Loopback devices. Ensure snd-aloop is loaded.")
+            raise RuntimeError(f"Could not find suitable ALSA Loopback devices. Found {len(loopback_devices)} loopback devices but missing input or output capability.")
         
         return capture_dev, playback_dev
     
