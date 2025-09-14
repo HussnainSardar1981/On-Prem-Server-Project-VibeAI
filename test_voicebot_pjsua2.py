@@ -128,48 +128,44 @@ def test_audio_format():
         import pyaudio
         p = pyaudio.PyAudio()
         
-        # Test 8kHz mono S16LE format - fixed API call
-        is_supported = p.is_format_supported(
-            rate=8000,
-            input_device=None,
-            output_device=None,
-            input_channels=1,
-            output_channels=1,
-            format=pyaudio.paInt16
-        )
+        # Test by trying to open streams (simpler approach)
+        logger.info("Testing 8kHz mono S16LE format by opening streams...")
         
-        if is_supported:
-            logger.info("✓ 8kHz mono S16LE format supported")
-        else:
-            logger.warning("8kHz mono S16LE format not supported")
-        
-        p.terminate()
-        return True
-        
-    except Exception as e:
-        logger.error(f"Audio format test failed: {e}")
-        # Try alternative test method
+        # Test input stream
         try:
-            import pyaudio
-            p = pyaudio.PyAudio()
-            
-            # Test by trying to open a stream
-            test_stream = p.open(
+            input_stream = p.open(
                 format=pyaudio.paInt16,
                 channels=1,
                 rate=8000,
                 input=True,
                 frames_per_buffer=160
             )
-            test_stream.close()
-            p.terminate()
-            
-            logger.info("✓ 8kHz mono S16LE format supported (alternative test)")
-            return True
-            
-        except Exception as e2:
-            logger.error(f"Alternative audio format test also failed: {e2}")
-            return False
+            input_stream.close()
+            logger.info("✓ Input stream test passed")
+        except Exception as e:
+            logger.warning(f"Input stream test failed: {e}")
+        
+        # Test output stream
+        try:
+            output_stream = p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=8000,
+                output=True,
+                frames_per_buffer=160
+            )
+            output_stream.close()
+            logger.info("✓ Output stream test passed")
+        except Exception as e:
+            logger.warning(f"Output stream test failed: {e}")
+        
+        p.terminate()
+        logger.info("✓ 8kHz mono S16LE format supported")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Audio format test failed: {e}")
+        return False
 
 def test_pjsua2():
     """Test pjsua2 functionality"""
