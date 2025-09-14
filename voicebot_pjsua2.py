@@ -95,13 +95,24 @@ class AudioDeviceManager:
         
         # First pass: find all loopback devices
         loopback_devices = []
+        logger.info("=== DEVICE ENUMERATION DEBUG ===")
         for i in range(device_count):
             info = self.pyaudio.get_device_info_by_index(i)
             name = info['name'].lower()
             
+            logger.info(f"Device {i}: '{info['name']}'")
+            logger.info(f"  - Name (lower): '{name}'")
+            logger.info(f"  - Input channels: {info['maxInputChannels']}")
+            logger.info(f"  - Output channels: {info['maxOutputChannels']}")
+            logger.info(f"  - Default sample rate: {info['defaultSampleRate']}")
+            logger.info(f"  - Contains 'loopback': {'loopback' in name}")
+            
             if 'loopback' in name:
                 loopback_devices.append((i, info))
-                logger.info(f"Device {i}: {info['name']} - Inputs: {info['maxInputChannels']}, Outputs: {info['maxOutputChannels']}")
+                logger.info(f"  *** ADDED TO LOOPBACK LIST ***")
+            logger.info("  ---")
+        
+        logger.info(f"=== FOUND {len(loopback_devices)} LOOPBACK DEVICES ===")
         
         if not loopback_devices:
             raise RuntimeError("No ALSA Loopback devices found. Ensure snd-aloop is loaded.")
@@ -110,11 +121,17 @@ class AudioDeviceManager:
         logger.info("Selecting loopback devices...")
         
         # Strategy 1: Look for specific hw device patterns (hw:0,0 and hw:0,1)
+        logger.info("=== STRATEGY 1: Looking for hw:0,0 and hw:0,1 patterns ===")
         for i, info in loopback_devices:
             name = info['name'].lower()
             logger.info(f"Evaluating device {i}: {info['name']}")
+            logger.info(f"  - Name (lower): '{name}'")
             logger.info(f"  - Input channels: {info['maxInputChannels']}")
             logger.info(f"  - Output channels: {info['maxOutputChannels']}")
+            logger.info(f"  - Contains 'hw:0,0': {'hw:0,0' in name}")
+            logger.info(f"  - Contains 'hw:0,1': {'hw:0,1' in name}")
+            logger.info(f"  - Current capture_dev: {capture_dev}")
+            logger.info(f"  - Current playback_dev: {playback_dev}")
             
             # Look for hw:0,0 pattern (typically capture)
             if 'hw:0,0' in name and info['maxInputChannels'] > 0 and capture_dev is None:
@@ -125,13 +142,22 @@ class AudioDeviceManager:
             elif 'hw:0,1' in name and info['maxOutputChannels'] > 0 and playback_dev is None:
                 playback_dev = i
                 logger.info(f"✓ Selected playback device: {info['name']} (hw:0,1)")
+            
+            logger.info(f"  - After evaluation - capture_dev: {capture_dev}, playback_dev: {playback_dev}")
+            logger.info("  ---")
         
         # Strategy 2: Fallback to any available devices if specific patterns not found
         if capture_dev is None or playback_dev is None:
-            logger.info("Fallback: Using any available loopback devices")
+            logger.info("=== STRATEGY 2: Fallback to any available devices ===")
+            logger.info(f"Before fallback - capture_dev: {capture_dev}, playback_dev: {playback_dev}")
             
             for i, info in loopback_devices:
                 name = info['name'].lower()
+                logger.info(f"Fallback evaluating device {i}: {info['name']}")
+                logger.info(f"  - Input channels: {info['maxInputChannels']}")
+                logger.info(f"  - Output channels: {info['maxOutputChannels']}")
+                logger.info(f"  - Current capture_dev: {capture_dev}")
+                logger.info(f"  - Current playback_dev: {playback_dev}")
                 
                 # Select first available input device
                 if info['maxInputChannels'] > 0 and capture_dev is None:
@@ -143,9 +169,21 @@ class AudioDeviceManager:
                     playback_dev = i
                     logger.info(f"✓ Fallback playback device: {info['name']}")
                 
+                logger.info(f"  - After fallback evaluation - capture_dev: {capture_dev}, playback_dev: {playback_dev}")
+                
                 # If we have both, we can stop
                 if capture_dev is not None and playback_dev is not None:
+                    logger.info("  - Both devices selected, stopping fallback")
                     break
+                logger.info("  ---")
+        
+        logger.info(f"=== FINAL DEVICE SELECTION VALIDATION ===")
+        logger.info(f"capture_dev: {capture_dev}")
+        logger.info(f"playback_dev: {playback_dev}")
+        logger.info(f"capture_dev is None: {capture_dev is None}")
+        logger.info(f"playback_dev is None: {playback_dev is None}")
+        logger.info(f"capture_dev is falsy: {not capture_dev}")
+        logger.info(f"playback_dev is falsy: {not playback_dev}")
         
         # CRITICAL FIX: Use 'is None' instead of 'not' to avoid treating device ID 0 as False
         if capture_dev is None or playback_dev is None:
@@ -165,7 +203,7 @@ class AudioDeviceManager:
         capture_info = self.pyaudio.get_device_info_by_index(capture_dev)
         playback_info = self.pyaudio.get_device_info_by_index(playback_dev)
         
-        logger.info(f"Final device selection:")
+        logger.info(f"=== FINAL DEVICE SELECTION SUCCESS ===")
         logger.info(f"  - Capture device: {capture_dev} ({capture_info['name']})")
         logger.info(f"  - Playback device: {playback_dev} ({playback_info['name']})")
         
