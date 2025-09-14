@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
-# Minimal, stable E2E: 3CX (pjsua2) + Whisper + Ollama + Coqui TTS
-# Key stability tricks:
-#   - Start pjsua2 with Null audio device (adm.setNullDev()) to avoid ALSA/PA races.
-#   - Lazy-load Whisper/TTS only after media becomes active.
+"""
+Stable E2E smoke test using ALSA directly (no PortAudio):
+- Registers to 3CX (pjsua2) with Null audio while idle
+- On media active, pins PJSIP to ALSA Loopback device
+- Captures caller audio from hw:Loopback,1,0
+- Plays TTS back into call via hw:Loopback,1,0
+- Single-turn conversation (greet -> STT -> LLM -> TTS -> hangup)
 
-import os, time, signal, logging, threading, json
+Env: uses your .env exactly (THREECX_*, OLLAMA_*, WHISPER_MODEL, TTS_MODEL, SAMPLE_RATE, CHUNK_SIZE).
+Optional overrides:
+  ALSA_IN_DEV=hw:Loopback,1,0
+  ALSA_OUT_DEV=hw:Loopback,1,0
+"""
+
+import os, time, signal, logging, threading
 from dotenv import load_dotenv
 import numpy as np
-import requests
-import pyaudio
 from scipy.signal import resample_poly
-
+import requests
+import webrtcvad
 import pjsua2 as pj
 
-# ---- env ----
+# ALSA direct bindings (no PortAudio)
+import alsaaudio  # pip install pyalsaaudio
+
+# --------- ENV ---------
 load_dotenv()
 SIP_DOMAIN   = os.getenv("THREECX_SERVER")
 SIP_PORT     = int(os.getenv("THREECX_PORT", "5060"))
@@ -26,81 +37,54 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "orca2:7b")
 WHISPER_MODEL= os.getenv("WHISPER_MODEL", "base")
 TTS_MODEL    = os.getenv("TTS_MODEL", "tts_models/en/ljspeech/tacotron2-DDC")
 
-SAMPLE_RATE  = int(os.getenv("SAMPLE_RATE", "8000"))
-FRAME        = int(os.getenv("CHUNK_SIZE", "160"))          # 20 ms @ 8 kHz
-PA_IN_INDEX  = int(os.getenv("LOOPBACK_IN_INDEX",  "-1"))   # -1=auto
-PA_OUT_INDEX = int(os.getenv("LOOPBACK_OUT_INDEX", "-1"))   # -1=auto
+SAMPLE_RATE  = int(os.getenv("SAMPLE_RATE", "8000"))   # 8k for SIP
+FRAME        = int(os.getenv("CHUNK_SIZE", "160"))     # 20ms @ 8k
+ALSA_IN_DEV  = os.getenv("ALSA_IN_DEV",  "hw:Loopback,1,0")
+ALSA_OUT_DEV = os.getenv("ALSA_OUT_DEV", "hw:Loopback,1,0")
 
-# tame thread storms from BLAS/torch if present
+# Keep native libs calm on servers
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-log = logging.getLogger("smoke-stable")
+log = logging.getLogger("smoke-alsa")
 
-# ---- audio helpers (PyAudio to ALSA Loopback) ----
+# --------- ALSA helpers ---------
+def open_alsa_capture(device: str, rate: int, period: int):
+    cap = alsaaudio.PCM(type=alsaaudio.PCM_CAPTURE, mode=alsaaudio.PCM_NORMAL, device=device)
+    cap.setchannels(1)
+    cap.setrate(rate)
+    cap.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+    cap.setperiodsize(period)  # frames per read
+    return cap
+
+def open_alsa_playback(device: str, rate: int, period: int):
+    pb = alsaaudio.PCM(type=alsaaudio.PCM_PLAYBACK, mode=alsaaudio.PCM_NORMAL, device=device)
+    pb.setchannels(1)
+    pb.setrate(rate)
+    pb.setformat(alsaaudio.PCM_FORMAT_S16_LE)
+    pb.setperiodsize(period)
+    return pb
+
 def resample_i16(x_i16: np.ndarray, src: int, dst: int) -> np.ndarray:
+    """Resample int16 PCM using polyphase; returns int16."""
+    if src == dst:
+        return x_i16.astype(np.int16, copy=False)
     x = x_i16.astype(np.float32) / 32768.0
-    g = np.gcd(src, dst); up = dst // g; down = src // g
-    y = resample_poly(x, up, down)
+    g = np.gcd(src, dst)
+    y = resample_poly(x, dst // g, src // g)
     y = np.clip(y, -1.0, 1.0)
     return (y * 32767.0).astype(np.int16)
 
-class LoopbackIO:
-    def __init__(self, rate=8000, frames=160, in_index=-1, out_index=-1):
-        self.pa = pyaudio.PyAudio()
-        if in_index < 0 or out_index < 0:
-            in_index, out_index = self._auto_pick()
-        self.in_index, self.out_index = in_index, out_index
-        self.in_stream = self.pa.open(format=pyaudio.paInt16, channels=1, rate=rate,
-                                      input=True, input_device_index=in_index,
-                                      frames_per_buffer=frames, start=False)
-        self.out_stream = self.pa.open(format=pyaudio.paInt16, channels=1, rate=rate,
-                                       output=True, output_device_index=out_index,
-                                       frames_per_buffer=frames, start=False)
-        self.rate, self.frames = rate, frames
-
-    def _auto_pick(self):
-        inp = out = None
-        for i in range(self.pa.get_device_count()):
-            info = self.pa.get_device_info_by_index(i)
-            name = (info.get("name") or "").lower()
-            if "loopback" in name:
-                if info.get("maxInputChannels", 0) > 0 and inp is None: inp = i
-                if info.get("maxOutputChannels",0) > 0 and out is None: out = i
-        if inp is None or out is None:
-            raise RuntimeError("No ALSA Loopback. Run: sudo modprobe snd-aloop")
-        return inp, out
-
-    def start(self):
-        if not self.in_stream.is_active():  self.in_stream.start_stream()
-        if not self.out_stream.is_active(): self.out_stream.start_stream()
-
-    def stop_close(self):
-        try:
-            if self.in_stream.is_active():  self.in_stream.stop_stream()
-            if self.out_stream.is_active(): self.out_stream.stop_stream()
-        finally:
-            self.in_stream.close(); self.out_stream.close(); self.pa.terminate()
-
-    def read(self) -> np.ndarray:
-        data = self.in_stream.read(self.frames, exception_on_overflow=False)
-        return np.frombuffer(data, dtype=np.int16)
-
-    def play(self, pcm_i16: np.ndarray):
-        self.out_stream.write(pcm_i16.astype(np.int16).tobytes())
-
-# ---- PJSUA2 call/account ----
+# --------- PJSUA2 wrappers ---------
 class SmokeCall(pj.Call):
     def __init__(self, acc, app): super().__init__(acc); self.app = app
-
     def onCallState(self, prm):
-        info = self.getInfo()
-        log.info("CALL %s (%s)", info.stateText, info.lastStatusCode)
-        if info.state == pj.PJSIP_INV_STATE_DISCONNECTED:
+        ci = self.getInfo()
+        log.info("CALL %s (%s)", ci.stateText, ci.lastStatusCode)
+        if ci.state == pj.PJSIP_INV_STATE_DISCONNECTED:
             self.app.end_session()
-
     def onCallMediaState(self, prm):
         ci = self.getInfo()
         for m in ci.media:
@@ -109,11 +93,11 @@ class SmokeCall(pj.Call):
                 adm = pj.Endpoint.instance().audDevManager()
                 am.startTransmit(adm.getPlaybackDevMedia())
                 adm.getCaptureDevMedia().startTransmit(am)
-                log.info("Media bridged (pjsip <-> ALSA loopback)")
+                log.info("PJSIP media bridged to ALSA Loopback")
                 self.app.start_session(self)
 
 class SmokeAccount(pj.Account):
-    def __init__(self, app): super().__init__(); self.app = app
+    def __init__(self, app): super().__init__(); self.app=app
     def onRegState(self, prm):
         info = self.getInfo()
         log.info("REGISTER active=%s code=%s txt=%s", info.regIsActive, prm.code, info.regStatusText)
@@ -123,23 +107,23 @@ class SmokeAccount(pj.Account):
         op = pj.CallOpParam(); op.statusCode = 200
         call.answer(op)
 
-# ---- App ----
+# --------- App ---------
 class App:
     def __init__(self):
         self.ep = pj.Endpoint()
         self.acc = None
         self.call = None
-        self.io   = None
-        # models are lazy-loaded on first session
+        self.cap = None     # ALSA capture
+        self.pb  = None     # ALSA playback
         self.whisper = None
         self.tts     = None
+        self.running = True
 
     def start(self):
-        # sanity
         if not all([SIP_DOMAIN, SIP_EXT, SIP_AUTH_ID, SIP_PASSWORD]):
             raise RuntimeError("Missing THREECX_* env vars")
 
-        # pjsip boot, with Null audio device to prevent segfaults while idle
+        # Start PJSIP with Null audio to avoid idle crashes
         self.ep.libCreate()
         lc = pj.LogConfig(); lc.level = 3; lc.msgLogging = 0
         ec = pj.EpConfig();  ec.logConfig = lc
@@ -148,10 +132,10 @@ class App:
         self.ep.libStart()
 
         adm = self.ep.audDevManager()
-        adm.setNullDev()   # <---- stability: no real device until media is ACTIVE
-        log.info("Started with Null audio device")
+        adm.setNullDev()  # keep off devices until media is active
+        log.info("PJSIP started with Null audio device")
 
-        # account/registration
+        # Register
         acfg = pj.AccountConfig()
         acfg.idUri = f"sip:{SIP_EXT}@{SIP_DOMAIN}"
         acfg.regConfig.registrarUri = f"sip:{SIP_DOMAIN}"
@@ -163,65 +147,90 @@ class App:
 
         log.info("Ready. Call the DID/extension; it will auto-answer. Ctrl+C to quit.")
 
-    # called from onCallMediaState
     def start_session(self, call: SmokeCall):
         self.call = call
 
-        # Switch from Null to ALSA loopback devices now that media is active
+        # Switch PJSIP to actual Loopback now that media is active
         adm = self.ep.audDevManager()
-        cap, play = self._pick_loopback_indices(adm)
-        adm.setCaptureDev(cap); adm.setPlaybackDev(play)
-        log.info("Pinned pjsip devices cap=%s play=%s", cap, play)
+        cap_id, play_id = self._find_loopback_ids(adm)
+        adm.setCaptureDev(cap_id); adm.setPlaybackDev(play_id)
+        log.info("Pinned PJSIP devices cap=%s play=%s", cap_id, play_id)
 
-        # open PyAudio loopback and greet
-        self.io = LoopbackIO(rate=SAMPLE_RATE, frames=FRAME,
-                             in_index=PA_IN_INDEX, out_index=PA_OUT_INDEX)
-        self.io.start()
+        # Open ALSA endpoints we will use (mirror side)
+        # Convention: PJSIP uses card 0; we sniff/send on card 1 side
+        self.cap = open_alsa_capture(ALSA_IN_DEV,  SAMPLE_RATE, FRAME)
+        self.pb  = open_alsa_playback(ALSA_OUT_DEV, SAMPLE_RATE, FRAME)
+        log.info("Opened ALSA capture=%s playback=%s", ALSA_IN_DEV, ALSA_OUT_DEV)
 
-        # Lazy-load models to keep registration path clean/stable
-        self._ensure_models()
+        # Lazy-load models here to avoid heavy libs during registration
+        import whisper as _wh
+        log.info("Loading Whisper: %s", WHISPER_MODEL)
+        self.whisper = _wh.load_model(WHISPER_MODEL)
+        from TTS.api import TTS as _TTS
+        log.info("Loading Coqui TTS: %s", TTS_MODEL)
+        self.tts = _TTS(model_name=TTS_MODEL, gpu=True, progress_bar=False)
 
         threading.Thread(target=self._one_turn, daemon=True).start()
 
-    def _ensure_models(self):
-        if self.whisper is None:
-            import whisper as _wh
-            log.info("Loading Whisper: %s", WHISPER_MODEL)
-            self.whisper = _wh.load_model(WHISPER_MODEL)
-        if self.tts is None:
-            from TTS.api import TTS as _TTS
-            log.info("Loading Coqui TTS: %s", TTS_MODEL)
-            self.tts = _TTS(model_name=TTS_MODEL, gpu=True, progress_bar=False)
+    def _find_loopback_ids(self, adm: pj.AudDevManager):
+        cap = play = None
+        for i in range(0, 64):
+            try:
+                di = adm.getDevInfo(i)
+            except Exception:
+                continue
+            name = (di.name or "").lower()
+            if "loopback" in name:
+                if di.inputCount  > 0 and cap  is None: cap  = i
+                if di.outputCount > 0 and play is None: play = i
+        if cap is None or play is None:
+            raise RuntimeError("PJSIP cannot find ALSA Loopback. Load snd-aloop.")
+        return cap, play
+
+    def _say(self, text: str):
+        log.info("TTS: %s", text[:120])
+        wav = np.asarray(self.tts.tts(text=text), dtype=np.float32)           # ~22.05kHz
+        pcm8 = resample_i16((wav * 32767).astype(np.int16), 22050, SAMPLE_RATE)
+        self.pb.write(pcm8.tobytes())
+
+    def _beep(self, freq=1000, ms=220):
+        n = int(SAMPLE_RATE * ms / 1000)
+        t = np.arange(n) / SAMPLE_RATE
+        wave = (0.4 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+        self.pb.write(((wave * 32767).astype(np.int16)).tobytes())
 
     def _one_turn(self):
         # greet
         self._say("Hello! This is an AI test. After the beep, ask a short question.")
         time.sleep(0.25); self._beep()
 
-        # record ~1 utterance until 500 ms silence
-        import webrtcvad
         vad = webrtcvad.Vad(2)
-        spoken = False; silence = 0; frames = []
+        spoken = False; silence = 0; chunks = []
+
+        # record a single utterance until 500 ms silence
         while self.call and self.call.isActive():
-            f = self.io.read()  # int16 @ 8k, 20 ms
-            if vad.is_speech(f.tobytes(), SAMPLE_RATE):
-                spoken = True; silence = 0; frames.append(f)
+            nframes, data = self.cap.read()   # bytes for FRAME samples (S16LE)
+            if nframes == 0: 
+                continue
+            frame = np.frombuffer(data, dtype=np.int16)
+            if vad.is_speech(data, SAMPLE_RATE):
+                spoken = True; silence = 0; chunks.append(frame)
             else:
                 if spoken: silence += 1
-                if spoken and silence >= 25:  # 25*20ms ≈ 500ms
+                if spoken and silence >= 25:   # 25 * 20ms ≈ 0.5s
                     break
 
-        if not frames:
-            self._say("I didn’t hear anything. Goodbye."); self.hangup(); return
+        if not chunks:
+            self._say("I did not hear anything. Goodbye."); self.hangup(); return
 
-        # STT (Whisper expects 16k float)
-        audio_8k  = np.concatenate(frames)
-        audio_16k = resample_i16(audio_8k, SAMPLE_RATE, 16000).astype(np.int16)
+        audio_8k  = np.concatenate(chunks)                            # int16
+        audio_16k = resample_i16(audio_8k, SAMPLE_RATE, 16000)       # int16
         af        = audio_16k.astype(np.float32) / 32768.0
+
         t0 = time.time()
         res = self.whisper.transcribe(af, language="en", fp16=False)
         user = (res.get("text") or "").strip()
-        log.info("STT %.2fs: %s", time.time() - t0, user)
+        log.info("STT %.2fs: %s", time.time()-t0, user)
 
         if not user:
             self._say("Sorry, I didn’t catch that. Goodbye."); self.hangup(); return
@@ -237,41 +246,13 @@ class App:
             }, timeout=30)
             r.raise_for_status()
             reply = (r.json().get("response") or "").strip()
-            log.info("LLM %.2fs", time.time() - t1)
+            log.info("LLM %.2fs", time.time()-t1)
         except Exception as e:
             log.error("Ollama error: %s", e)
             reply = "I’m having trouble reaching the model right now."
 
-        # TTS -> play
         self._say(reply)
         self.hangup()
-
-    def _pick_loopback_indices(self, adm: pj.AudDevManager):
-        cap = play = None
-        for i in range(0, 64):
-            try:
-                info = adm.getDevInfo(i)
-            except Exception:
-                continue
-            name = (info.name or "").lower()
-            if "loopback" in name:
-                if info.inputCount  > 0 and cap  is None: cap  = i
-                if info.outputCount > 0 and play is None: play = i
-        if cap is None or play is None:
-            raise RuntimeError("pjsua2 cannot find ALSA Loopback. Load `snd-aloop`.")
-        return cap, play
-
-    def _say(self, text: str):
-        log.info("TTS: %s", text[:120])
-        wav = np.asarray(self.tts.tts(text=text), dtype=np.float32)  # ~22.05k
-        pcm8 = resample_i16((wav * 32767).astype(np.int16), 22050, SAMPLE_RATE)
-        self.io.play(pcm8)
-
-    def _beep(self, freq=1000, ms=220):
-        n = int(SAMPLE_RATE * ms / 1000)
-        t = np.arange(n) / SAMPLE_RATE
-        wave = (0.4 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
-        self.io.play((wave * 32767).astype(np.int16))
 
     def hangup(self):
         try:
@@ -282,9 +263,10 @@ class App:
 
     def end_session(self):
         try:
-            if self.io: self.io.stop_close()
+            if self.cap: self.cap.close()
+            if self.pb:  self.pb.close()
         finally:
-            self.io = None; self.call = None
+            self.cap = None; self.pb = None; self.call = None
 
     def stop(self):
         self.end_session()
@@ -292,7 +274,7 @@ class App:
         except Exception: pass
         self.ep.libDestroy()
 
-# ---- main ----
+# --------- main ---------
 if __name__ == "__main__":
     app = App()
     app.start()
