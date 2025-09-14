@@ -214,8 +214,13 @@ class SIPClient:
             # Generate digest response
             auth_response = self.calculate_digest_response(auth_params)
             
+            # Decide which header to use based on challenge type
+            is_proxy = 'proxy-authenticate:' in challenge_response.lower()
+            header_name = 'Proxy-Authorization' if is_proxy else 'Authorization'
+            logger.info(f"Using {header_name} header for authentication")
+            
             # Create authenticated REGISTER message
-            auth_register = self.create_authenticated_register_message(auth_params, auth_response)
+            auth_register = self.create_authenticated_register_message(auth_params, auth_response, header_name)
             
             logger.info("Sending authenticated REGISTER...")
             self.socket.sendto(auth_register.encode(), 
@@ -288,7 +293,7 @@ class SIPClient:
             if algorithm != 'MD5':
                 logger.warning(f"Unsupported algorithm: {algorithm}, using MD5")
             
-            username = self.config.threecx_extension
+            username = self.config.threecx_auth_id or self.config.threecx_extension
             password = self.config.threecx_password
             method = "REGISTER"
             uri = f"sip:{self.config.threecx_server}"
@@ -328,7 +333,7 @@ class SIPClient:
             logger.error(f"Digest calculation failed: {e}")
             return None
     
-    def create_authenticated_register_message(self, auth_params, auth_response):
+    def create_authenticated_register_message(self, auth_params, auth_response, header_name='Authorization'):
         """Create authenticated REGISTER message with proper Authorization header"""
         import random
         
@@ -339,7 +344,7 @@ class SIPClient:
         tag_id = f"tag-{random.randint(100000, 999999)}"
         
         # Build Authorization header
-        username = self.config.threecx_extension
+        username = self.config.threecx_auth_id or self.config.threecx_extension
         realm = auth_params.get('realm', '')
         nonce = auth_params.get('nonce', '')
         uri = f"sip:{self.config.threecx_server}"
@@ -367,7 +372,7 @@ Call-ID: {call_id}\r
 CSeq: 2 REGISTER\r
 Contact: <sip:{self.config.threecx_extension}@{self.local_ip}:5060;transport=udp>\r
 User-Agent: NETOVO-VoiceBot/1.0\r
-Authorization: {auth_header}\r
+{header_name}: {auth_header}\r
 Expires: 3600\r
 Content-Length: 0\r
 \r
