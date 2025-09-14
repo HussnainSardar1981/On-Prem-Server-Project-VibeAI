@@ -106,28 +106,46 @@ class AudioDeviceManager:
         if not loopback_devices:
             raise RuntimeError("No ALSA Loopback devices found. Ensure snd-aloop is loaded.")
         
-        # Simplified device selection - just pick the first available devices
+        # ALSA Loopback device selection strategy
         logger.info("Selecting loopback devices...")
         
+        # Strategy 1: Look for specific hw device patterns (hw:0,0 and hw:0,1)
         for i, info in loopback_devices:
             name = info['name'].lower()
             logger.info(f"Evaluating device {i}: {info['name']}")
             logger.info(f"  - Input channels: {info['maxInputChannels']}")
             logger.info(f"  - Output channels: {info['maxOutputChannels']}")
             
-            # Select first available input device
-            if info['maxInputChannels'] > 0 and not capture_dev:
+            # Look for hw:0,0 pattern (typically capture)
+            if 'hw:0,0' in name and info['maxInputChannels'] > 0 and not capture_dev:
                 capture_dev = i
-                logger.info(f"✓ Selected capture device: {info['name']}")
+                logger.info(f"✓ Selected capture device: {info['name']} (hw:0,0)")
             
-            # Select first available output device
-            if info['maxOutputChannels'] > 0 and not playback_dev:
+            # Look for hw:0,1 pattern (typically playback)
+            elif 'hw:0,1' in name and info['maxOutputChannels'] > 0 and not playback_dev:
                 playback_dev = i
-                logger.info(f"✓ Selected playback device: {info['name']}")
+                logger.info(f"✓ Selected playback device: {info['name']} (hw:0,1)")
+        
+        # Strategy 2: Fallback to any available devices if specific patterns not found
+        if capture_dev is None or playback_dev is None:
+            logger.info("Fallback: Using any available loopback devices")
             
-            # If we have both, we can stop
-            if capture_dev is not None and playback_dev is not None:
-                break
+            for i, info in loopback_devices:
+                name = info['name'].lower()
+                
+                # Select first available input device
+                if info['maxInputChannels'] > 0 and not capture_dev:
+                    capture_dev = i
+                    logger.info(f"✓ Fallback capture device: {info['name']}")
+                
+                # Select first available output device
+                if info['maxOutputChannels'] > 0 and not playback_dev:
+                    playback_dev = i
+                    logger.info(f"✓ Fallback playback device: {info['name']}")
+                
+                # If we have both, we can stop
+                if capture_dev is not None and playback_dev is not None:
+                    break
         
         if not capture_dev or not playback_dev:
             raise RuntimeError(f"Could not find suitable ALSA Loopback devices. Found {len(loopback_devices)} loopback devices but missing input or output capability.")
@@ -136,9 +154,13 @@ class AudioDeviceManager:
         if capture_dev == playback_dev:
             logger.warning("Same device selected for both input and output, this may cause issues")
         
+        # Get device names for logging
+        capture_info = self.pyaudio.get_device_info_by_index(capture_dev)
+        playback_info = self.pyaudio.get_device_info_by_index(playback_dev)
+        
         logger.info(f"Final device selection:")
-        logger.info(f"  - Capture device: {capture_dev} ({loopback_devices[capture_dev][1]['name']})")
-        logger.info(f"  - Playback device: {playback_dev} ({loopback_devices[playback_dev][1]['name']})")
+        logger.info(f"  - Capture device: {capture_dev} ({capture_info['name']})")
+        logger.info(f"  - Playback device: {playback_dev} ({playback_info['name']})")
         
         return capture_dev, playback_dev
     
@@ -153,76 +175,182 @@ class AudioDeviceManager:
             logger.info(f"  - Max Output Channels: {info['maxOutputChannels']}")
             logger.info(f"  - Default Sample Rate: {info['defaultSampleRate']}")
             
-            # For loopback devices, we'll be more lenient with validation
+            # For loopback devices, use lenient validation
             if 'loopback' in device_name.lower():
-                logger.info(f"  - Loopback device detected, skipping strict validation")
-                return True
+                logger.info(f"  - Loopback device detected, using lenient validation")
+                
+                # Just check if it has the right direction capability
+                if is_input and info['maxInputChannels'] > 0:
+                    logger.info(f"  - Input validation passed ({info['maxInputChannels']} channels)")
+                    return True
+                elif not is_input and info['maxOutputChannels'] > 0:
+                    logger.info(f"  - Output validation passed ({info['maxOutputChannels']} channels)")
+                    return True
+                else:
+                    logger.warning(f"  - Wrong direction for loopback device")
+                    return False
             
-            # Test by trying to open a stream (simpler and more reliable)
+            # For other devices, try to open a test stream
             try:
-                test_stream = self.pyaudio.open(
-                    format=self.config.format,
-                    channels=self.config.channels,
-                    rate=self.config.sample_rate,
-                    input=is_input,
-                    output=not is_input,
-                    input_device_index=device_id if is_input else None,
-                    output_device_index=device_id if not is_input else None,
-                    frames_per_buffer=self.config.chunk_size
-                )
+                logger.info(f"  - Testing stream with {self.config.sample_rate}Hz, {self.config.channels} channel(s)")
+                
+                stream_params = {
+                    'format': self.config.format,
+                    'channels': self.config.channels,
+                    'rate': self.config.sample_rate,
+                    'input': is_input,
+                    'output': not is_input,
+                    'frames_per_buffer': self.config.chunk_size
+                }
+                
+                if is_input:
+                    stream_params['input_device_index'] = device_id
+                else:
+                    stream_params['output_device_index'] = device_id
+                
+                test_stream = self.pyaudio.open(**stream_params)
                 test_stream.close()
                 logger.info(f"  - Stream test passed")
                 return True
-            except Exception as e:
-                logger.warning(f"  - Stream test failed: {e}")
+                
+            except Exception as stream_error:
+                logger.warning(f"  - Stream test failed: {stream_error}")
+                # For loopback devices, this might still work, so don't fail immediately
+                if 'loopback' in device_name.lower():
+                    logger.info(f"  - Allowing loopback device despite stream test failure")
+                    return True
                 return False
             
         except Exception as e:
-            logger.error(f"Device validation failed: {e}")
+            logger.error(f"Device validation failed for device {device_id}: {e}")
             return False
     
     def initialize_streams(self, capture_dev: int, playback_dev: int) -> bool:
         """Initialize audio streams with selected devices"""
         try:
-            # Validate devices
+            logger.info(f"Initializing audio streams: capture={capture_dev}, playback={playback_dev}")
+            
+            # Validate devices first
             if not self.validate_device_capabilities(capture_dev, True):
-                raise RuntimeError("Capture device validation failed")
+                logger.error("Capture device validation failed")
+                # Try to continue anyway for loopback devices
+                logger.info("Attempting to continue with potentially incompatible capture device")
+            
             if not self.validate_device_capabilities(playback_dev, False):
-                raise RuntimeError("Playback device validation failed")
+                logger.error("Playback device validation failed")
+                # Try to continue anyway for loopback devices
+                logger.info("Attempting to continue with potentially incompatible playback device")
             
-            # Initialize capture stream
-            self.capture_stream = self.pyaudio.open(
-                format=self.config.format,
-                channels=self.config.channels,
-                rate=self.config.sample_rate,
-                input=True,
-                input_device_index=capture_dev,
-                frames_per_buffer=self.config.chunk_size
-            )
+            # Initialize capture stream with error handling
+            try:
+                logger.info("Opening capture stream...")
+                self.capture_stream = self.pyaudio.open(
+                    format=self.config.format,
+                    channels=self.config.channels,
+                    rate=self.config.sample_rate,
+                    input=True,
+                    input_device_index=capture_dev,
+                    frames_per_buffer=self.config.chunk_size,
+                    # Add some tolerance for problematic devices
+                    stream_callback=None
+                )
+                logger.info("Capture stream opened successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to open capture stream: {e}")
+                # Try without specifying device index (use default)
+                logger.info("Retrying capture stream with default device...")
+                try:
+                    self.capture_stream = self.pyaudio.open(
+                        format=self.config.format,
+                        channels=self.config.channels,
+                        rate=self.config.sample_rate,
+                        input=True,
+                        frames_per_buffer=self.config.chunk_size
+                    )
+                    logger.info("Capture stream opened with default device")
+                except Exception as e2:
+                    logger.error(f"Failed to open capture stream with default device: {e2}")
+                    return False
             
-            # Initialize playback stream
-            self.playback_stream = self.pyaudio.open(
-                format=self.config.format,
-                channels=self.config.channels,
-                rate=self.config.sample_rate,
-                output=True,
-                output_device_index=playback_dev,
-                frames_per_buffer=self.config.chunk_size
-            )
+            # Initialize playback stream with error handling
+            try:
+                logger.info("Opening playback stream...")
+                self.playback_stream = self.pyaudio.open(
+                    format=self.config.format,
+                    channels=self.config.channels,
+                    rate=self.config.sample_rate,
+                    output=True,
+                    output_device_index=playback_dev,
+                    frames_per_buffer=self.config.chunk_size
+                )
+                logger.info("Playback stream opened successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to open playback stream: {e}")
+                # Try without specifying device index (use default)
+                logger.info("Retrying playback stream with default device...")
+                try:
+                    self.playback_stream = self.pyaudio.open(
+                        format=self.config.format,
+                        channels=self.config.channels,
+                        rate=self.config.sample_rate,
+                        output=True,
+                        frames_per_buffer=self.config.chunk_size
+                    )
+                    logger.info("Playback stream opened with default device")
+                except Exception as e2:
+                    logger.error(f"Failed to open playback stream with default device: {e2}")
+                    # Clean up capture stream
+                    if self.capture_stream:
+                        try:
+                            self.capture_stream.close()
+                        except:
+                            pass
+                    return False
             
             self.capture_dev = capture_dev
             self.playback_dev = playback_dev
             
-            logger.info(f"Audio streams initialized - Capture: {capture_dev}, Playback: {playback_dev}")
+            logger.info(f"Audio streams initialized successfully")
+            logger.info(f"  - Capture device: {capture_dev}")
+            logger.info(f"  - Playback device: {playback_dev}")
+            logger.info(f"  - Sample rate: {self.config.sample_rate}Hz")
+            logger.info(f"  - Channels: {self.config.channels}")
+            logger.info(f"  - Chunk size: {self.config.chunk_size}")
+            
             return True
             
         except Exception as e:
             logger.error(f"Failed to initialize audio streams: {e}")
+            self.cleanup_streams()
             return False
+    
+    def cleanup_streams(self):
+        """Clean up individual streams"""
+        try:
+            if self.capture_stream:
+                self.capture_stream.stop_stream()
+                self.capture_stream.close()
+                self.capture_stream = None
+        except Exception as e:
+            logger.error(f"Error cleaning up capture stream: {e}")
+        
+        try:
+            if self.playback_stream:
+                self.playback_stream.stop_stream()
+                self.playback_stream.close()
+                self.playback_stream = None
+        except Exception as e:
+            logger.error(f"Error cleaning up playback stream: {e}")
     
     def read_audio(self, frames: int) -> bytes:
         """Read audio from capture device"""
         try:
+            if not self.capture_stream:
+                logger.error("Capture stream not initialized")
+                return b''
+            
             return self.capture_stream.read(frames, exception_on_overflow=False)
         except Exception as e:
             logger.error(f"Audio read error: {e}")
@@ -231,6 +359,10 @@ class AudioDeviceManager:
     def write_audio(self, audio_data: bytes) -> bool:
         """Write audio to playback device"""
         try:
+            if not self.playback_stream:
+                logger.error("Playback stream not initialized")
+                return False
+            
             self.playback_stream.write(audio_data)
             return True
         except Exception as e:
@@ -240,14 +372,15 @@ class AudioDeviceManager:
     def cleanup(self):
         """Clean up audio resources"""
         try:
-            if self.capture_stream:
-                self.capture_stream.stop_stream()
-                self.capture_stream.close()
-            if self.playback_stream:
-                self.playback_stream.stop_stream()
-                self.playback_stream.close()
+            logger.info("Cleaning up audio resources...")
+            self.cleanup_streams()
+            
             if self.pyaudio:
                 self.pyaudio.terminate()
+                self.pyaudio = None
+                
+            logger.info("Audio cleanup completed")
+            
         except Exception as e:
             logger.error(f"Audio cleanup error: {e}")
 
