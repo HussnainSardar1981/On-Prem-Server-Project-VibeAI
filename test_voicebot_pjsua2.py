@@ -184,22 +184,28 @@ def test_pjsua2():
         
         # Test configuration - use correct API
         try:
-            # Try the correct API for newer pjsua2 versions
-            ua_cfg = pj.UAConfig()
-            log_cfg = pj.LogConfig()
-            media_cfg = pj.MediaConfig()
-            
-            endpoint.libInit(ua_cfg, log_cfg, media_cfg)
+            # Try newer pjsua2 API with EpConfig
+            ep_cfg = pj.EpConfig()
+            endpoint.libInit(ep_cfg)
             endpoint.libDestroy()
             
         except AttributeError:
-            # Fallback for older pjsua2 versions
             try:
-                endpoint.libInit()
+                # Fallback: try with individual configs
+                ua_cfg = pj.UAConfig()
+                log_cfg = pj.LogConfig()
+                media_cfg = pj.MediaConfig()
+                endpoint.libInit(ua_cfg, log_cfg, media_cfg)
                 endpoint.libDestroy()
-            except Exception as e2:
-                logger.error(f"pjsua2 libInit failed: {e2}")
-                return False
+                
+            except AttributeError:
+                # Final fallback for older pjsua2 versions
+                try:
+                    endpoint.libInit()
+                    endpoint.libDestroy()
+                except Exception as e2:
+                    logger.error(f"pjsua2 libInit failed: {e2}")
+                    return False
         
         logger.info("✓ pjsua2 basic functionality OK")
         return True
