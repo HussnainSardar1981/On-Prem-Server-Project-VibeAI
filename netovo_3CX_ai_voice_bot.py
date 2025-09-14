@@ -442,7 +442,14 @@ class VoiceBot:
             # Media config
             ep_cfg.medConfig.clockRate = self.config.sample_rate
             ep_cfg.medConfig.audioFramePtime = 20  # 20ms frames
-            ep_cfg.medConfig.ecOptions = pj.PJMEDIA_ECHO_CANCEL
+            
+            # Echo cancellation (optional - may not be available in all builds)
+            try:
+                ep_cfg.medConfig.ecOptions = pj.PJMEDIA_ECHO_CANCEL
+                logger.info("Echo cancellation enabled")
+            except AttributeError:
+                logger.warning("Echo cancellation not available in this pjsua2 build - continuing without it")
+                ep_cfg.medConfig.ecOptions = 0
             
             self.endpoint.libInit(ep_cfg)
             
