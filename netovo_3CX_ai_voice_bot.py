@@ -549,10 +549,15 @@ class ThreeCXVoiceBot:
             # Warm up models
             logger.info("Warming up models...")
             dummy_audio = np.zeros(16000, dtype=np.float32)
+            logger.info("Transcribing dummy audio with Whisper...")
             _ = self.whisper_model.transcribe(dummy_audio)
-            _ = self.tts_model.tts("Hello world")
+            logger.info("Whisper warmup complete")
             
-            logger.info("AI models ready")
+            logger.info("Generating TTS for 'Hello world'...")
+            _ = self.tts_model.tts("Hello world")
+            logger.info("TTS warmup complete")
+            
+            logger.info("AI models ready - proceeding to SIP connection...")
             return True
             
         except Exception as e:
@@ -831,6 +836,7 @@ If you cannot help with something, politely explain and offer alternatives."""
         logger.info("Starting call monitoring...")
         
         # Connect to 3CX
+        logger.info("Attempting to connect to 3CX SIP server...")
         connected = await self.sip_client.connect()
         if not connected:
             logger.warning("SIP connection failed - running in simulation mode")
@@ -1019,9 +1025,13 @@ a=rtpmap:0 PCMU/8000\r
         
         try:
             # Initialize AI models
+            logger.info("=== Starting model initialization ===")
             if not await self.initialize_models():
                 logger.error("Failed to initialize models")
                 return False
+            
+            logger.info("=== Models initialized successfully ===")
+            logger.info("=== Starting SIP connection ===")
             
             # Start monitoring calls
             monitoring_task = asyncio.create_task(self.start_call_monitoring())
