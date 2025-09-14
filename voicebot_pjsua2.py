@@ -13,6 +13,7 @@ import asyncio
 import threading
 import queue
 import collections
+import signal
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 import json
@@ -1099,12 +1100,22 @@ class VoiceBot:
             logger.info(f"Extension: {self.sip_config.extension}")
             logger.info(f"Server: {self.sip_config.server}")
             
+            # Setup signal handler for graceful shutdown
+            def signal_handler(signum, frame):
+                logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+                self.is_running = False
+            
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+            
             # Keep running
             try:
+                logger.info("Voice bot is running. Press Ctrl+C to stop gracefully.")
                 while self.is_running:
                     time.sleep(1)
             except KeyboardInterrupt:
                 logger.info("Shutdown requested by user")
+                self.is_running = False
             
             return True
             
@@ -1116,26 +1127,54 @@ class VoiceBot:
             self.cleanup()
     
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up resources in proper order to prevent segfaults"""
         try:
-            logger.info("Cleaning up resources...")
+            logger.info("Starting cleanup sequence...")
             
             self.is_running = False
             
-            # Hangup all calls
+            # Step 1: Stop all calls first
             if self.endpoint:
-                self.endpoint.hangupAllCalls()
-                time.sleep(1)
-                self.endpoint.libDestroy()
+                try:
+                    logger.info("Hanging up all calls...")
+                    self.endpoint.hangupAllCalls()
+                    time.sleep(0.5)  # Shorter wait
+                except Exception as e:
+                    logger.warning(f"Error hanging up calls: {e}")
             
-            # Cleanup audio
+            # Step 2: Cleanup audio streams BEFORE destroying pjsua2
             if self.audio_manager:
-                self.audio_manager.cleanup()
+                try:
+                    logger.info("Cleaning up audio streams...")
+                    self.audio_manager.cleanup_streams()  # Just streams, not PyAudio yet
+                except Exception as e:
+                    logger.warning(f"Error cleaning up audio streams: {e}")
             
-            logger.info("Cleanup completed")
+            # Step 3: Destroy pjsua2 endpoint
+            if self.endpoint:
+                try:
+                    logger.info("Destroying pjsua2 endpoint...")
+                    self.endpoint.libDestroy()
+                    self.endpoint = None
+                    time.sleep(0.5)  # Give pjsua2 time to cleanup
+                except Exception as e:
+                    logger.warning(f"Error destroying pjsua2: {e}")
+            
+            # Step 4: Now cleanup PyAudio safely
+            if self.audio_manager:
+                try:
+                    logger.info("Cleaning up PyAudio...")
+                    if self.audio_manager.pyaudio:
+                        self.audio_manager.pyaudio.terminate()
+                        self.audio_manager.pyaudio = None
+                except Exception as e:
+                    logger.warning(f"Error cleaning up PyAudio: {e}")
+            
+            logger.info("Cleanup completed successfully")
             
         except Exception as e:
             logger.error(f"Cleanup error: {e}")
+            # Don't re-raise - we're cleaning up anyway
 
 def load_config() -> Dict[str, Any]:
     """Load configuration from environment"""
@@ -1165,8 +1204,23 @@ def main():
     # Load configuration
     config = load_config()
     
-    # Create and run voice bot
+    # Create voice bot
     voice_bot = VoiceBot(config)
+    
+    # Global cleanup function
+    def cleanup_and_exit():
+        try:
+            logger.info("Performing final cleanup...")
+            voice_bot.cleanup()
+            logger.info("Final cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during final cleanup: {e}")
+        finally:
+            sys.exit(0)
+    
+    # Register cleanup on normal exit
+    import atexit
+    atexit.register(lambda: voice_bot.cleanup() if voice_bot else None)
     
     if args.dry_run:
         success = voice_bot.run(dry_run=True)
@@ -1185,7 +1239,20 @@ def main():
         if success:
             voice_bot.make_test_call(args.extension)
     else:
-        success = voice_bot.run()
+        try:
+            success = voice_bot.run()
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+            success = True
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            success = False
+        finally:
+            # Ensure cleanup happens
+            try:
+                voice_bot.cleanup()
+            except:
+                pass
     
     sys.exit(0 if success else 1)
 
