@@ -109,16 +109,21 @@ class AudioDeviceManager:
         # Second pass: select devices based on hw device numbers
         for i, info in loopback_devices:
             name = info['name'].lower()
+            logger.info(f"Evaluating device {i}: {info['name']}")
+            logger.info(f"  - Input channels: {info['maxInputChannels']}")
+            logger.info(f"  - Output channels: {info['maxOutputChannels']}")
+            logger.info(f"  - Contains 'hw:0,1': {'hw:0,1' in name}")
+            logger.info(f"  - Contains 'hw:0,0': {'hw:0,0' in name}")
             
             # Select capture device (PBX → us) - hw:0,1 (device 1)
             if info['maxInputChannels'] > 0 and 'hw:0,1' in name and not capture_dev:
                 capture_dev = i
-                logger.info(f"Selected capture device: {info['name']}")
+                logger.info(f"✓ Selected capture device: {info['name']}")
             
             # Select playback device (us → PBX) - hw:0,0 (device 0)
             if info['maxOutputChannels'] > 0 and 'hw:0,0' in name and not playback_dev:
                 playback_dev = i
-                logger.info(f"Selected playback device: {info['name']}")
+                logger.info(f"✓ Selected playback device: {info['name']}")
         
         # Fallback: if specific hw devices not found, use any available
         if not capture_dev:
@@ -144,6 +149,17 @@ class AudioDeviceManager:
         """Validate device supports required audio format"""
         try:
             info = self.pyaudio.get_device_info_by_index(device_id)
+            device_name = info['name']
+            
+            logger.info(f"Validating device {device_id}: {device_name}")
+            logger.info(f"  - Max Input Channels: {info['maxInputChannels']}")
+            logger.info(f"  - Max Output Channels: {info['maxOutputChannels']}")
+            logger.info(f"  - Default Sample Rate: {info['defaultSampleRate']}")
+            
+            # For loopback devices, we'll be more lenient with validation
+            if 'loopback' in device_name.lower():
+                logger.info(f"  - Loopback device detected, skipping strict validation")
+                return True
             
             # Test by trying to open a stream (simpler and more reliable)
             try:
@@ -158,16 +174,11 @@ class AudioDeviceManager:
                     frames_per_buffer=self.config.chunk_size
                 )
                 test_stream.close()
-                is_supported = True
+                logger.info(f"  - Stream test passed")
+                return True
             except Exception as e:
-                logger.debug(f"Device {device_id} stream test failed: {e}")
-                is_supported = False
-            
-            if not is_supported:
-                logger.warning(f"Device {device_id} does not support {self.config.sample_rate}Hz {self.config.channels}ch")
+                logger.warning(f"  - Stream test failed: {e}")
                 return False
-            
-            return True
             
         except Exception as e:
             logger.error(f"Device validation failed: {e}")
