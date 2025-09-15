@@ -730,6 +730,9 @@ class VoiceBot:
                 ep_cfg.medConfig.hasIoqueue = False  # Disable I/O queue to prevent threading issues
                 ep_cfg.medConfig.threadCnt = 1      # Single media thread
                 ep_cfg.medConfig.clockRate = 8000   # Match 3CX sample rate
+                ep_cfg.medConfig.noVad = True       # Disable VAD to reduce audio processing
+                ep_cfg.medConfig.ecOptions = 0      # Disable echo cancellation
+                ep_cfg.medConfig.ecTailLen = 0      # No echo cancellation tail
                 
                 self.endpoint.libInit(ep_cfg)
                 logger.info("pjsua2 initialized with conservative EpConfig")
