@@ -67,12 +67,19 @@ class VoiceBotDemo:
     def load_models(self):
         """Load AI models"""
         try:
+            import torch
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            
             print("Loading Whisper model...")
-            self.whisper_model = whisper.load_model("base")
+            self.whisper_model = whisper.load_model("base", device=device)
             print("Whisper loaded")
             
             print("Loading TTS model...")
-            self.tts = TTS("tts_models/en/ljspeech/tacotron2-DDC")
+            self.tts = TTS(
+                model_name="tts_models/en/ljspeech/tacotron2-DDC",
+                gpu=torch.cuda.is_available(),
+                progress_bar=False
+            )
             print("TTS loaded")
             
             return True
@@ -86,19 +93,14 @@ class VoiceBotDemo:
             if not self.tts:
                 return None
             
-            # Generate audio
-            audio_data = self.tts.tts(text)
+            # Generate audio (using same method as test_pipeline.py)
+            wav = self.tts.tts(text=text)
             
-            # Convert to numpy array
-            if isinstance(audio_data, list):
-                audio_data = np.array(audio_data)
+            # Convert to numpy array if needed
+            if isinstance(wav, list):
+                wav = np.array(wav)
             
-            # Normalize audio
-            audio_data = audio_data.astype(np.float32)
-            if np.max(np.abs(audio_data)) > 0:
-                audio_data = audio_data / np.max(np.abs(audio_data))
-            
-            return audio_data
+            return wav
         except Exception as e:
             print(f"TTS Error: {e}")
             return None
@@ -109,14 +111,14 @@ class VoiceBotDemo:
             if audio_data is None:
                 return False
             
-            # Convert to 16-bit PCM
+            # Convert to 16-bit PCM (same as test_pipeline.py)
             audio_int16 = (audio_data * 32767).astype(np.int16)
             
-            # Play audio
+            # Play audio with TTS sample rate
             stream = self.audio.open(
                 format=self.audio_format,
                 channels=self.channels,
-                rate=22050,  # TTS sample rate
+                rate=22050,  # TTS sample rate from test_pipeline.py
                 output=True
             )
             
