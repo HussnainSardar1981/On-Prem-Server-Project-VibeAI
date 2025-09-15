@@ -103,10 +103,14 @@ class AudioDeviceManager:
             raise
         logger.info("AudioDeviceManager.__init__: Initialization completed")
     
-    def _pick_pjsua2_loopback(self):
+    def _pick_pjsua2_loopback(self, endpoint):
         """Pick loopback devices from pjsua2's device list"""
         try:
-            adm = pj.Endpoint.instance().audDevManager()
+            if not endpoint:
+                logger.error("No endpoint provided for device enumeration")
+                return (None, None), (None, None)
+                
+            adm = endpoint.audDevManager()
             n = adm.getDevCount()
             cap_id = pb_id = None
             cap_name = pb_name = None
@@ -892,15 +896,26 @@ class VoiceBot:
             self.audio_manager = AudioDeviceManager(self.audio_config)
             logger.info("Step 2.2 SUCCESS: AudioDeviceManager created")
             
+            # Skip device binding if using null audio mode
+            if self.use_null_audio:
+                logger.info("Step 2.3: SKIPPING device mapping - null audio mode enabled")
+                self._pending_pa_ids = (None, None)
+                return True
+            
             logger.info("Step 2.3: Selecting devices using name-based mapping...")
+            
+            # Ensure pjsua2 endpoint is initialized before device enumeration
+            if not self.endpoint:
+                logger.error("Step 2.3 FAILED: pjsua2 endpoint not initialized")
+                return False
             
             # Use name-based device mapping (ChatGPT's fix for segfault)
             try:
-                (pj_cap, pj_cap_name), (pj_pb, pj_pb_name) = self.audio_manager._pick_pjsua2_loopback()
+                (pj_cap, pj_cap_name), (pj_pb, pj_pb_name) = self.audio_manager._pick_pjsua2_loopback(self.endpoint)
                 
                 if pj_cap is not None and pj_pb is not None:
                     logger.info("Step 2.4: Binding pjsua2 to loopback devices...")
-                    adm = pj.Endpoint.instance().audDevManager()
+                    adm = self.endpoint.audDevManager()
                     adm.setCaptureDev(pj_cap)
                     adm.setPlaybackDev(pj_pb)
                     logger.info(f"Step 2.4 SUCCESS: Bound pjsua2 to: cap={pj_cap}({pj_cap_name}), pb={pj_pb}({pj_pb_name})")
