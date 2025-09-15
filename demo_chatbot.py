@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).parent))
 
 try:
     import whisper
+    print(f"Whisper imported successfully, version: {whisper.__version__ if hasattr(whisper, '__version__') else 'unknown'}")
     import torch
     from TTS.api import TTS
     import requests
@@ -69,10 +70,18 @@ class VoiceBotDemo:
         try:
             import torch
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f"Using device: {device}")
             
             print("Loading Whisper model...")
+            # Debug: Check if whisper has load_model attribute
+            if not hasattr(whisper, 'load_model'):
+                print(f"Error: whisper module does not have 'load_model' attribute")
+                print(f"Available attributes: {[attr for attr in dir(whisper) if not attr.startswith('_')]}")
+                return False
+            
+            # Use the exact same pattern as test_pipeline.py
             self.whisper_model = whisper.load_model("base", device=device)
-            print("Whisper loaded")
+            print("Whisper loaded successfully")
             
             print("Loading TTS model...")
             self.tts = TTS(
@@ -80,11 +89,13 @@ class VoiceBotDemo:
                 gpu=torch.cuda.is_available(),
                 progress_bar=False
             )
-            print("TTS loaded")
+            print("TTS loaded successfully")
             
             return True
         except Exception as e:
             print(f"Error loading models: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def text_to_speech(self, text):
