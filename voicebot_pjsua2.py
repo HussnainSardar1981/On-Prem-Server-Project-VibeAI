@@ -65,13 +65,13 @@ class AudioConfig:
 
 @dataclass
 class SIPConfig:
-    """SIP configuration for 3CX"""
-    server: str = "mtipbx.ny.3cx.us"
-    port: int = 5060
-    extension: str = "1600"
-    auth_id: str = "qpZh2VS624"
-    password: str = "FcHw0P2FHK"
-    realm: str = "3CXPhoneSystem"
+    """SIP configuration for 3CX - loads from environment"""
+    server: str = os.getenv('SIP_SERVER', 'mtipbx.ny.3cx.us')
+    port: int = int(os.getenv('SIP_PORT', '5060'))
+    extension: str = os.getenv('SIP_EXTENSION', '1600')
+    auth_id: str = os.getenv('SIP_AUTH_ID', 'qpZh2VS624')
+    password: str = os.getenv('SIP_PASSWORD', 'FcHw0P2FHK')
+    realm: str = os.getenv('SIP_REALM', '3CXPhoneSystem')
 
 class AudioDeviceManager:
     """Manages ALSA Loopback device selection and validation"""
@@ -620,6 +620,8 @@ class VoiceBotCall(pj.Call):
         logger.info(f"Call state: {ci.stateText} ({ci.state})")
         
         if ci.state == pj.PJSIP_INV_STATE_CALLING:
+            logger.info("Outgoing call - dialing")
+        elif ci.state == pj.PJSIP_INV_STATE_INCOMING:
             logger.info("Incoming call detected")
         elif ci.state == pj.PJSIP_INV_STATE_EARLY:
             logger.info("Call is ringing")
@@ -683,6 +685,24 @@ class VoiceBotAccount(pj.Account):
             logger.warning(f"Authentication required: {prm.code}")
         else:
             logger.error(f"Registration failed: {prm.code} - {info}")
+    
+    def onIncomingCall(self, prm):
+        """Handle incoming calls - auto-answer them"""
+        logger.info(f"Incoming call received from {prm.rdata.srcAddress}")
+        
+        try:
+            # Create call object
+            call = VoiceBotCall(self, prm.callId, self.voice_bot)
+            
+            # Auto-answer the call with 200 OK
+            op = pj.CallOpParam()
+            op.statusCode = 200
+            call.answer(op)
+            
+            logger.info("Incoming call auto-answered successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to answer incoming call: {e}")
 
 class VoiceBot:
     """Main voice bot class using pjsua2"""
@@ -811,15 +831,20 @@ class VoiceBot:
             
             logger.info("Step 2.4: Configuring pjsua2 audio devices...")
             
-            # SKIP pjsua2 audio device configuration to prevent segfaults
-            # Let pjsua2 use default devices and handle audio routing through PyAudio
+            # Bind pjsua2 to the ALSA Loopback devices we selected
             try:
-                logger.info("Step 2.4: Skipping pjsua2 audio device configuration to prevent segfaults")
-                logger.info("pjsua2 will use default audio devices, PyAudio will handle ALSA Loopback")
-                logger.info(f"Step 2.4 SUCCESS: Using default pjsua2 audio, PyAudio manages Loopback devices")
+                adm = pj.Endpoint.instance().audDevManager()
+                
+                # Try to set devices; if it throws, log and continue with defaults
+                adm.setCaptureDev(capture_dev)
+                adm.setPlaybackDev(playback_dev)
+                
+                logger.info(f"Step 2.4 SUCCESS: pjsua2 audio bound to ALSA Loopback (capture={capture_dev}, playback={playback_dev})")
+                
             except Exception as pj_error:
-                logger.warning(f"Step 2.4 WARNING: Unexpected error: {pj_error}")
-                # Continue anyway
+                logger.warning(f"Step 2.4 WARNING: Could not bind pjsua2 audio to loopback: {pj_error}")
+                logger.warning("Using pjsua2 default audio devices - audio routing may not work correctly")
+                # Continue anyway - might still work with defaults
             
             logger.info("Step 2.5: Initializing PyAudio streams...")
             
@@ -1245,7 +1270,9 @@ def main():
             logger.info("✓ Audio bridging can be tested with incoming calls")
             voice_bot.cleanup()
     elif args.test_call:
-        success = voice_bot.run(dry_run=True)
+        logger.info("=== TEST CALL MODE ===")
+        logger.info("This will register with 3CX and make a test call")
+        success = voice_bot.run()  # NOT dry-run - need registration for test calls
         if success:
             voice_bot.make_test_call(args.extension)
     else:
