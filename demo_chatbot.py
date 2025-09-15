@@ -15,8 +15,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent))
 
 try:
-    import whisper
-    print(f"Whisper imported successfully, version: {whisper.__version__ if hasattr(whisper, '__version__') else 'unknown'}")
+    # Import OpenAI Whisper specifically (not the Graphite whisper package)
+    import openai_whisper as whisper
+    print(f"OpenAI Whisper imported successfully, version: {whisper.__version__ if hasattr(whisper, '__version__') else 'unknown'}")
     import torch
     from TTS.api import TTS
     import requests
@@ -29,7 +30,8 @@ try:
     from dotenv import load_dotenv
 except ImportError as e:
     print(f"Missing dependency: {e}")
-    print("Please install: pip install whisper torch TTS requests soundfile numpy webrtcvad pyaudio python-dotenv")
+    print("Please install: pip install openai-whisper torch TTS requests soundfile numpy webrtcvad pyaudio python-dotenv")
+    print("Note: Make sure to install 'openai-whisper' not 'whisper' to avoid conflicts with Graphite whisper")
     sys.exit(1)
 
 # Load environment variables (optional)
