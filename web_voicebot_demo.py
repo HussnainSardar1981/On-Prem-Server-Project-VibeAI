@@ -17,8 +17,9 @@ import tempfile
 sys.path.append(str(Path(__file__).parent))
 
 try:
-    # Import OpenAI Whisper specifically (not the Graphite whisper package)
-    import openai_whisper as whisper
+    # Use the same import pattern as your working demo_chatbot.py
+    import whisper
+    print(f"Whisper imported successfully, version: {whisper.__version__ if hasattr(whisper, '__version__') else 'unknown'}")
     import torch
     from TTS.api import TTS
     import requests
@@ -28,6 +29,7 @@ try:
 except ImportError as e:
     print(f"Missing dependency: {e}")
     print("Please install: pip install openai-whisper torch TTS requests soundfile numpy flask python-dotenv")
+    print("Note: Make sure to install 'openai-whisper' not 'whisper' to avoid conflicts with Graphite whisper")
     sys.exit(1)
 
 # Load environment variables (optional)
@@ -226,6 +228,19 @@ def status():
     except Exception as e:
         return jsonify({"error": str(e)})
 
+@app.route('/api/health')
+def health():
+    """Simple health check endpoint"""
+    return jsonify({"status": "ok", "message": "Web VoiceBot is running"})
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({"error": "Internal server error"}), 500
+
 def main():
     """Main function"""
     print("Starting Web VoiceBot Demo...")
@@ -237,9 +252,10 @@ def main():
             print("Ollama is not running. Please start it first:")
             print("   ollama serve")
             return
-    except:
-        print("Cannot connect to Ollama. Please start it first:")
-        print("   ollama serve")
+        print("Ollama connection verified")
+    except Exception as e:
+        print(f"Cannot connect to Ollama: {e}")
+        print("Please start it first: ollama serve")
         return
     
     # Load models
@@ -250,10 +266,18 @@ def main():
     
     print("Models loaded successfully!")
     print("Starting web server...")
-    print("Access the web interface at: http://localhost:5000")
+    print("="*60)
+    print("🌐 Web Interface URL: http://10.2.9.10:5000")
+    print("🎤 VoiceBot is ready for chat!")
+    print("="*60)
     
     # Start Flask app
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    except KeyboardInterrupt:
+        print("\nShutting down web server...")
+    except Exception as e:
+        print(f"Error starting web server: {e}")
 
 if __name__ == "__main__":
     main()
