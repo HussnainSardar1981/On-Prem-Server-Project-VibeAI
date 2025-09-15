@@ -65,13 +65,23 @@ class AudioConfig:
 
 @dataclass
 class SIPConfig:
-    """SIP configuration for 3CX - loads from environment"""
-    server: str = os.getenv('SIP_SERVER', 'mtipbx.ny.3cx.us')
-    port: int = int(os.getenv('SIP_PORT', '5060'))
-    extension: str = os.getenv('SIP_EXTENSION', '1600')
-    auth_id: str = os.getenv('SIP_AUTH_ID', 'qpZh2VS624')
-    password: str = os.getenv('SIP_PASSWORD', 'FcHw0P2FHK')
-    realm: str = os.getenv('SIP_REALM', '3CXPhoneSystem')
+    """SIP configuration for 3CX - loads from environment with validation"""
+    def __init__(self):
+        # Require all SIP credentials from environment - no defaults
+        required_vars = ['SIP_SERVER', 'SIP_EXTENSION', 'SIP_AUTH_ID', 'SIP_PASSWORD']
+        missing_vars = [var for var in required_vars if not os.getenv(var)]
+        
+        if missing_vars:
+            logger.error(f"Missing required environment variables: {missing_vars}")
+            logger.error("Please set all required SIP credentials in your .env file")
+            sys.exit(f"Missing SIP environment variables: {missing_vars}")
+        
+        self.server: str = os.getenv('SIP_SERVER')
+        self.port: int = int(os.getenv('SIP_PORT', '5060'))
+        self.extension: str = os.getenv('SIP_EXTENSION')
+        self.auth_id: str = os.getenv('SIP_AUTH_ID')
+        self.password: str = os.getenv('SIP_PASSWORD')
+        self.realm: str = os.getenv('SIP_REALM', '3CXPhoneSystem')
 
 class AudioDeviceManager:
     """Manages ALSA Loopback device selection and validation"""
@@ -799,6 +809,9 @@ class VoiceBot:
         self.speech_buffer = collections.deque(maxlen=50)
         self.silence_frames = 0
         
+        # Safety options
+        self.use_null_audio = config.get('use_null_audio', False)
+        
         logger.info("Voice Bot initialized")
     
     def initialize_pjsua2(self) -> bool:
@@ -810,44 +823,31 @@ class VoiceBot:
             self.endpoint = pj.Endpoint()
             self.endpoint.libCreate()
             
-            # Configure logging and initialize with robust error handling
+            # Configure logging and initialize with safe defaults
             try:
-                # Try newer pjsua2 API with EpConfig - use conservative settings
-                ep_cfg = pj.EpConfig()
-                ep_cfg.logConfig.level = 4  # INFO level
-                ep_cfg.logConfig.consoleLevel = 4
+                # Use safe default MediaConfig - don't force custom settings that can destabilize pjmedia
+                ua_cfg = pj.UAConfig()
+                log_cfg = pj.LogConfig()
+                log_cfg.level = 4  # INFO level
+                log_cfg.consoleLevel = 4
+                med_cfg = pj.MediaConfig()  # Use defaults - most stable path
                 
-                # Conservative media config to prevent segfaults
-                ep_cfg.medConfig.hasIoqueue = False  # Disable I/O queue to prevent threading issues
-                ep_cfg.medConfig.threadCnt = 1      # Single media thread
-                ep_cfg.medConfig.clockRate = 8000   # Match 3CX sample rate
-                ep_cfg.medConfig.noVad = True       # Disable VAD to reduce audio processing
-                ep_cfg.medConfig.ecOptions = 0      # Disable echo cancellation
-                ep_cfg.medConfig.ecTailLen = 0      # No echo cancellation tail
-                
-                self.endpoint.libInit(ep_cfg)
-                logger.info("pjsua2 initialized with conservative EpConfig")
+                self.endpoint.libInit(ua_cfg, log_cfg, med_cfg)
+                logger.info("pjsua2 initialized with default MediaConfig (most stable)")
             except (AttributeError, TypeError) as e:
-                logger.warning(f"EpConfig approach failed: {e}")
+                logger.warning(f"Individual configs approach failed: {e}")
                 try:
-                    # Fallback: try with individual configs
-                    ua_cfg = pj.UAConfig()
-                    log_cfg = pj.LogConfig()
-                    log_cfg.level = 4  # INFO level
-                    log_cfg.consoleLevel = 4
-                    media_cfg = pj.MediaConfig()
-                    self.endpoint.libInit(ua_cfg, log_cfg, media_cfg)
-                    logger.info("pjsua2 initialized with separate configs")
-                except (AttributeError, TypeError) as e2:
-                    logger.warning(f"Separate configs approach failed: {e2}")
-                    try:
-                        # Final fallback - minimal EpConfig
-                        ep_cfg = pj.EpConfig()
-                        self.endpoint.libInit(ep_cfg)
-                        logger.info("pjsua2 initialized with minimal EpConfig")
-                    except Exception as e3:
-                        logger.error(f"All pjsua2 initialization attempts failed: {e3}")
-                        raise RuntimeError(f"Failed to initialize pjsua2: {e3}")
+                    # Fallback - minimal EpConfig with defaults
+                    ep_cfg = pj.EpConfig()
+                    # Only set logging, leave media config as default
+                    ep_cfg.logConfig.level = 4
+                    ep_cfg.logConfig.consoleLevel = 4
+                    
+                    self.endpoint.libInit(ep_cfg)
+                    logger.info("pjsua2 initialized with minimal EpConfig")
+                except Exception as e2:
+                    logger.error(f"All pjsua2 initialization attempts failed: {e2}")
+                    raise RuntimeError(f"Failed to initialize pjsua2: {e2}")
             
             # Create UDP transport
             tcfg = pj.TransportConfig()
@@ -856,6 +856,11 @@ class VoiceBot:
             
             # Start library
             self.endpoint.libStart()
+            
+            # Optional null device mode for testing
+            if self.use_null_audio:
+                logger.info("Using null audio device for testing (no real audio)")
+                pj.Endpoint.instance().audDevManager().setNullDev()
             
             logger.info("pjsua2 initialized successfully")
             return True
@@ -900,6 +905,11 @@ class VoiceBot:
                     adm.setPlaybackDev(pj_pb)
                     logger.info(f"Step 2.4 SUCCESS: Bound pjsua2 to: cap={pj_cap}({pj_cap_name}), pb={pj_pb}({pj_pb_name})")
                     
+                    # Verify the binding worked
+                    current_cap = adm.getCaptureDev()
+                    current_pb = adm.getPlaybackDev()
+                    logger.info(f"Step 2.4 VERIFY: Current devices after binding - cap={current_cap}, pb={current_pb}")
+                    
                     # Map to PyAudio by name (not number) and store for later
                     pa_cap = self.audio_manager._pyaudio_index_by_name(pj_cap_name, True)
                     pa_pb = self.audio_manager._pyaudio_index_by_name(pj_pb_name, False)
@@ -911,6 +921,9 @@ class VoiceBot:
                 else:
                     logger.warning("Step 2.4 WARNING: Could not find Loopback in pjsua2 device list; leaving defaults")
                     self._pending_pa_ids = (None, None)
+                    
+                    # Add safety option to use null device if no loopback found
+                    logger.info("Step 2.4 SAFETY: Consider using setNullDev() for testing if segfaults persist")
                     
             except Exception as mapping_error:
                 logger.error(f"Step 2.3 FAILED: Device mapping failed: {mapping_error}")
@@ -1289,11 +1302,18 @@ def main():
                        help='Make a test call to echo service')
     parser.add_argument('--extension', default='*777',
                        help='Extension to call for test (default: *777)')
+    parser.add_argument('--null-audio', action='store_true',
+                       help='Use null audio device for testing (isolates audio issues)')
     
     args = parser.parse_args()
     
     # Load configuration
     config = load_config()
+    
+    # Add null audio option from command line
+    if args.null_audio:
+        config['use_null_audio'] = True
+        logger.info("Null audio mode enabled - will isolate audio device issues")
     
     # Create voice bot
     voice_bot = VoiceBot(config)
