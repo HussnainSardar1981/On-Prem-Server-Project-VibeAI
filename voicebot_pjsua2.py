@@ -92,6 +92,60 @@ class AudioDeviceManager:
             logger.error(f"AudioDeviceManager.__init__: Failed to create PyAudio instance: {e}")
             raise
         logger.info("AudioDeviceManager.__init__: Initialization completed")
+    
+    def _pick_pjsua2_loopback(self):
+        """Pick loopback devices from pjsua2's device list"""
+        try:
+            adm = pj.Endpoint.instance().audDevManager()
+            n = adm.getDevCount()
+            cap_id = pb_id = None
+            cap_name = pb_name = None
+            
+            logger.info(f"Scanning {n} pjsua2 devices for loopback...")
+            
+            for i in range(n):
+                di = adm.getDevInfo(i)
+                name = (di.name or "").lower()
+                driver = (di.driver or "").lower()
+                
+                logger.info(f"pjsua2 device {i}: '{di.name}' driver='{di.driver}' in={di.inputCount} out={di.outputCount}")
+                
+                if ("loopback" in name or "alsa" in driver):
+                    if di.inputCount > 0 and cap_id is None:
+                        cap_id, cap_name = i, di.name
+                        logger.info(f"Selected pjsua2 capture: {i} ({di.name})")
+                    if di.outputCount > 0 and pb_id is None:
+                        pb_id, pb_name = i, di.name
+                        logger.info(f"Selected pjsua2 playback: {i} ({di.name})")
+            
+            return (cap_id, cap_name), (pb_id, pb_name)
+            
+        except Exception as e:
+            logger.error(f"Failed to pick pjsua2 loopback devices: {e}")
+            return (None, None), (None, None)
+    
+    def _pyaudio_index_by_name(self, friendly_name, want_input):
+        """Find PyAudio device index by matching name"""
+        if not friendly_name:
+            return None
+            
+        friendly = friendly_name.lower()
+        logger.info(f"Looking for PyAudio device matching '{friendly_name}' (input={want_input})")
+        
+        for i in range(self.pyaudio.get_device_count()):
+            info = self.pyaudio.get_device_info_by_index(i)
+            name = (info["name"] or "").lower()
+            
+            if friendly in name or name in friendly:
+                if want_input and info["maxInputChannels"] > 0:
+                    logger.info(f"Found PyAudio input match: {i} ({info['name']})")
+                    return i
+                if not want_input and info["maxOutputChannels"] > 0:
+                    logger.info(f"Found PyAudio output match: {i} ({info['name']})")
+                    return i
+        
+        logger.warning(f"No PyAudio device found matching '{friendly_name}'")
+        return None
         
     def enumerate_devices(self) -> Tuple[Optional[int], Optional[int]]:
         """Enumerate and select ALSA Loopback devices"""
@@ -634,6 +688,12 @@ class VoiceBotCall(pj.Call):
         elif ci.state == pj.PJSIP_INV_STATE_DISCONNECTED:
             logger.info("Call ended")
             self.is_active = False
+            
+            # Clean up PyAudio streams when call ends - ChatGPT's fix
+            if self.voice_bot.audio_manager:
+                logger.info("Cleaning up PyAudio streams after call")
+                self.voice_bot.audio_manager.cleanup_streams()
+                
             if self.audio_bridge:
                 self.audio_bridge.stop()
     
@@ -649,6 +709,17 @@ class VoiceBotCall(pj.Call):
     def setup_audio_bridge(self):
         """Setup audio bridge between pjsua2 and ALSA Loopback"""
         try:
+            # Open PyAudio streams now (first time) - ChatGPT's deferred opening fix
+            if self.voice_bot.audio_manager.capture_stream is None:
+                cap_id, pb_id = getattr(self.voice_bot, "_pending_pa_ids", (None, None))
+                if cap_id is None or pb_id is None:
+                    logger.warning("PyAudio device ids missing; attempting defaults")
+                    # let initialize_streams fall back to defaults
+                    self.voice_bot.audio_manager.initialize_streams(0, 0)
+                else:
+                    logger.info(f"Opening PyAudio streams: cap={cap_id}, pb={pb_id}")
+                    self.voice_bot.audio_manager.initialize_streams(cap_id, pb_id)
+            
             # Get media
             call_media = self.getMedia(0)
             aud_dev_manager = pj.Endpoint.instance().audDevManager()
@@ -661,7 +732,7 @@ class VoiceBotCall(pj.Call):
             call_media.startTransmit(pb_media)
             cap_media.startTransmit(call_media)
             
-            logger.info("Audio bridge established")
+            logger.info("Audio bridge established (call ↔ loopback)")
             
         except Exception as e:
             logger.error(f"Failed to setup audio bridge: {e}")
@@ -816,54 +887,40 @@ class VoiceBot:
             self.audio_manager = AudioDeviceManager(self.audio_config)
             logger.info("Step 2.2 SUCCESS: AudioDeviceManager created")
             
-            logger.info("Step 2.3: Enumerating devices...")
+            logger.info("Step 2.3: Selecting devices using name-based mapping...")
             
-            # Enumerate and select devices - wrap in try/catch for debugging
+            # Use name-based device mapping (ChatGPT's fix for segfault)
             try:
-                capture_dev, playback_dev = self.audio_manager.enumerate_devices()
-                logger.info(f"Step 2.3 SUCCESS: Devices enumerated - capture: {capture_dev}, playback: {playback_dev}")
-            except Exception as enum_error:
-                logger.error(f"Step 2.3 FAILED: Device enumeration failed: {enum_error}")
-                logger.error(f"Exception type: {type(enum_error)}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                raise  # Re-raise to see full stack trace
-            
-            logger.info("Step 2.4: Configuring pjsua2 audio devices...")
-            
-            # Bind pjsua2 to the ALSA Loopback devices we selected
-            try:
-                adm = pj.Endpoint.instance().audDevManager()
+                (pj_cap, pj_cap_name), (pj_pb, pj_pb_name) = self.audio_manager._pick_pjsua2_loopback()
                 
-                # Try to set devices; if it throws, log and continue with defaults
-                adm.setCaptureDev(capture_dev)
-                adm.setPlaybackDev(playback_dev)
-                
-                logger.info(f"Step 2.4 SUCCESS: pjsua2 audio bound to ALSA Loopback (capture={capture_dev}, playback={playback_dev})")
-                
-            except Exception as pj_error:
-                logger.warning(f"Step 2.4 WARNING: Could not bind pjsua2 audio to loopback: {pj_error}")
-                logger.warning("Using pjsua2 default audio devices - audio routing may not work correctly")
-                # Continue anyway - might still work with defaults
-            
-            logger.info("Step 2.5: Initializing PyAudio streams...")
-            
-            # Initialize PyAudio streams AFTER pjsua2 configuration
-            try:
-                stream_result = self.audio_manager.initialize_streams(capture_dev, playback_dev)
-                if not stream_result:
-                    logger.error("Step 2.5 FAILED: initialize_streams returned False")
-                    raise RuntimeError("Failed to initialize audio streams")
-                logger.info("Step 2.5 SUCCESS: PyAudio streams initialized")
-            except Exception as stream_error:
-                logger.error(f"Step 2.5 FAILED: Stream initialization failed: {stream_error}")
-                logger.error(f"Exception type: {type(stream_error)}")
+                if pj_cap is not None and pj_pb is not None:
+                    logger.info("Step 2.4: Binding pjsua2 to loopback devices...")
+                    adm = pj.Endpoint.instance().audDevManager()
+                    adm.setCaptureDev(pj_cap)
+                    adm.setPlaybackDev(pj_pb)
+                    logger.info(f"Step 2.4 SUCCESS: Bound pjsua2 to: cap={pj_cap}({pj_cap_name}), pb={pj_pb}({pj_pb_name})")
+                    
+                    # Map to PyAudio by name (not number) and store for later
+                    pa_cap = self.audio_manager._pyaudio_index_by_name(pj_cap_name, True)
+                    pa_pb = self.audio_manager._pyaudio_index_by_name(pj_pb_name, False)
+                    self._pending_pa_ids = (pa_cap, pa_pb)  # store for later, on call
+                    
+                    logger.info(f"Step 2.5: PyAudio device mapping: cap={pa_cap}, pb={pa_pb}")
+                    logger.info("Step 2.5 SUCCESS: Device mapping completed - streams will open on call")
+                    
+                else:
+                    logger.warning("Step 2.4 WARNING: Could not find Loopback in pjsua2 device list; leaving defaults")
+                    self._pending_pa_ids = (None, None)
+                    
+            except Exception as mapping_error:
+                logger.error(f"Step 2.3 FAILED: Device mapping failed: {mapping_error}")
+                logger.error(f"Exception type: {type(mapping_error)}")
                 import traceback
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 raise  # Re-raise to see full stack trace
             
             logger.info(f"=== AUDIO DEVICE SETUP COMPLETE ===")
-            logger.info(f"Final configuration - Capture: {capture_dev}, Playback: {playback_dev}")
+            logger.info(f"Device mapping completed - streams will open during calls")
             return True
             
         except Exception as e:
@@ -1119,8 +1176,7 @@ class VoiceBot:
                 return False
             logger.info("Step 4 SUCCESS: SIP registration completed")
             
-            # Set call handler
-            self.endpoint.setCallHandler(VoiceBotCall)
+            # Call handler is set via Account.onIncomingCall() - no need for setCallHandler
             
             self.is_running = True
             logger.info("Voice Bot is running and ready for calls")
