@@ -27,12 +27,15 @@ try:
     import io
     from dotenv import load_dotenv
 except ImportError as e:
-    print("Missing dependency: {}".format(e))
+    print(f"Missing dependency: {e}")
     print("Please install: pip install whisper torch TTS requests soundfile numpy webrtcvad pyaudio python-dotenv")
     sys.exit(1)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables (optional)
+try:
+    load_dotenv()
+except:
+    pass  # Continue without .env file
 
 class VoiceBotDemo:
     def __init__(self):
@@ -74,7 +77,7 @@ class VoiceBotDemo:
             
             return True
         except Exception as e:
-            print("Error loading models: {}".format(e))
+            print(f"Error loading models: {e}")
             return False
     
     def text_to_speech(self, text):
@@ -97,7 +100,7 @@ class VoiceBotDemo:
             
             return audio_data
         except Exception as e:
-            print("TTS Error: {}".format(e))
+            print(f"TTS Error: {e}")
             return None
     
     def play_audio(self, audio_data):
@@ -123,17 +126,17 @@ class VoiceBotDemo:
             
             return True
         except Exception as e:
-            print("Audio playback error: {}".format(e))
+            print(f"Audio playback error: {e}")
             return False
     
     def generate_response(self, user_input):
         """Generate response using Ollama LLM"""
         try:
-            prompt = (
-                "You are a helpful AI assistant. Please provide a concise, helpful response to the user's question.\n\n"
-                "User: {}\n\n"
-                "Assistant:".format(user_input)
-            )
+            prompt = f"""You are a helpful AI assistant. Please provide a concise, helpful response to the user's question.
+
+User: {user_input}
+
+Assistant:"""
             
             response = requests.post(
                 self.ollama_url,
@@ -149,14 +152,14 @@ class VoiceBotDemo:
                 result = response.json()
                 return result.get("response", "I'm sorry, I couldn't generate a response.")
             else:
-                return "Error: {}".format(response.status_code)
+                return f"Error: {response.status_code}"
                 
         except Exception as e:
-            return "Error generating response: {}".format(e)
+            return f"Error generating response: {e}"
     
     def speak_text(self, text):
         """Convert text to speech and play it"""
-        print("Speaking: {}".format(text))
+        print(f"Speaking: {text}")
         
         # Generate audio
         audio_data = self.text_to_speech(text)
@@ -199,12 +202,12 @@ class VoiceBotDemo:
                 self.speak_text(response)
                 
                 # Print response for reference
-                print("AI: {}".format(response))
+                print(f"AI: {response}")
                 
         except KeyboardInterrupt:
             print("\n\nDemo ended. Goodbye!")
         except Exception as e:
-            print("\nError: {}".format(e))
+            print(f"\nError: {e}")
         finally:
             self.cleanup()
     
