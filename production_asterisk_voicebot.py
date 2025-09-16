@@ -26,7 +26,7 @@ except ImportError:
 import numpy as np
 import torch
 import librosa
-import whisper
+# Import whisper inside functions to avoid conflicts
 from TTS.api import TTS
 import requests
 import soundfile as sf
@@ -115,6 +115,7 @@ class AIProcessor:
             # Load Whisper
             if self.whisper_model is None:
                 logger.info("Loading Whisper model...")
+                import openai_whisper as whisper
                 self.whisper_model = whisper.load_model(self.config.whisper_model, device=self.device)
                 logger.info("Whisper loaded successfully")
             
