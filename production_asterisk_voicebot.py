@@ -112,12 +112,42 @@ class AIProcessor:
             logger.info("Loading AI models for new call...")
             start_time = time.time()
             
-            # Load Whisper
+            # Load Whisper - FIXED IMPORT HANDLING
             if self.whisper_model is None:
                 logger.info("Loading Whisper model...")
-                import openai_whisper as whisper
-                self.whisper_model = whisper.load_model(self.config.whisper_model, device=self.device)
-                logger.info("Whisper loaded successfully")
+                whisper_module = None
+                
+                # Try different import methods for whisper
+                import_methods = [
+                    ('whisper', lambda: __import__('whisper')),
+                    ('openai_whisper', lambda: __import__('openai_whisper')),
+                    ('openai-whisper as whisper', lambda: __import__('openai_whisper'))
+                ]
+                
+                for method_name, import_func in import_methods:
+                    try:
+                        logger.info(f"Trying import method: {method_name}")
+                        whisper_module = import_func()
+                        logger.info(f"Successfully imported whisper using: {method_name}")
+                        break
+                    except ImportError as e:
+                        logger.warning(f"Import method {method_name} failed: {e}")
+                        continue
+                
+                if whisper_module is None:
+                    logger.error("All whisper import methods failed")
+                    return False
+                
+                # Load the actual model
+                try:
+                    self.whisper_model = whisper_module.load_model(
+                        self.config.whisper_model, 
+                        device=self.device
+                    )
+                    logger.info("Whisper model loaded successfully")
+                except Exception as e:
+                    logger.error(f"Failed to load whisper model: {e}")
+                    return False
             
             # Load TTS
             if self.tts_model is None:
@@ -135,6 +165,8 @@ class AIProcessor:
             
         except Exception as e:
             logger.error(f"AI model initialization failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def speech_to_text(self, audio_file: str) -> Optional[str]:
