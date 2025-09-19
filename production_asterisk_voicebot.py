@@ -61,8 +61,8 @@ class ProductionConfig:
         self.whisper_model = "tiny"
         self.ollama_url = "http://127.0.0.1:11434/api/generate"
         self.ollama_model = "orca2:7b"
-        self.record_timeout = 5
-        self.silence_threshold = 2
+        self.record_timeout = 10
+        self.silence_threshold = 1
         self.max_turns = 8
         self.max_call_duration = 300
         self.model_load_timeout = 15
@@ -117,41 +117,38 @@ class SimplifiedVoiceBot:
             return False
     
     def record_audio(self) -> Optional[str]:
-        """Record user audio with proper AGI commands"""
+        """Record user audio with improved parameters"""
         try:
-            # Create recording file in /tmp with proper permissions
-            temp_dir = '/tmp'
-            record_name = f"{temp_dir}/voicebot_record_{int(time.time())}"
-
+            # Create recording file with timestamp
+            record_name = f"/tmp/voicebot_record_{int(time.time())}"
             logger.info(f"Recording to {record_name}")
 
-            # Play beep using correct AGI command
-            try:
-                self.agi.stream_file('beep', '')
-            except:
-                # Fallback - no beep
-                pass
-
-            # Record with correct parameters for telephony
+            # Record with optimized parameters
             result = self.agi.record_file(
-                record_name,          # filename (no extension)
-                format='wav',         # format parameter
-                escape_digits='#*0',  # escape digits
-                timeout=self.config.record_timeout * 1000,  # timeout in ms
-                offset=0,             # offset
-                beep=1,              # beep (1=yes, 0=no)
-                silence=self.config.silence_threshold  # silence threshold
+                record_name,                              # filename (no extension)
+                format='wav',                            # format
+                escape_digits='#*',                      # escape digits
+                timeout=self.config.record_timeout * 1000,  # 10 seconds
+                offset=0,                                # start offset
+                beep=True,                              # play beep
+                silence=self.config.silence_threshold    # silence detection
             )
 
-            # Check if recording was created
+            # Check recording result
             wav_file = record_name + '.wav'
             if os.path.exists(wav_file):
                 file_size = os.path.getsize(wav_file)
                 logger.info(f"Recording created: {file_size} bytes")
-                if file_size > 1024:  # At least 1KB
+
+                # Accept smaller recordings for test calls
+                if file_size > 100:  # Reduced threshold
+                    return wav_file
+                else:
+                    logger.warning(f"Recording too small: {file_size} bytes")
+                    # Don't fail immediately, return the file anyway for processing
                     return wav_file
 
-            logger.warning("Recording too small or failed")
+            logger.error("No recording file created")
             return None
 
         except Exception as e:
@@ -181,9 +178,9 @@ class SimplifiedVoiceBot:
         try:
             logger.info("Starting call handling")
             
-            # Answer the call
+            # Answer the call immediately
             self.agi.answer()
-            time.sleep(0.5)  # Brief pause
+            # Remove unnecessary delay
             
             # Send greeting
             greeting = f"Hello! This is {self.config.bot_name} from {self.config.company_name} support."
