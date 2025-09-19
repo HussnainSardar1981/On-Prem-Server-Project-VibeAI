@@ -360,45 +360,26 @@ class ProductionVoiceBot:
             raise
     
     def speak_text_gpu(self, text: str, interrupt_key: str = '#') -> bool:
-        """GPU-accelerated professional text-to-speech"""
         try:
-            start_time = time.time()
-            logger.info(f"Speaking with GPU TTS: {text[:50]}...")
-            
             if self.gpu_tts:
-                # Use GPU TTS processor
                 audio_file = self.gpu_tts.generate_speech(text)
-                
                 if audio_file:
-                    # Play via Asterisk (remove .wav extension)
-                    audio_name = audio_file.replace('.wav', '')
-                    result = self.agi.stream_file(audio_name, interrupt_key)
+                    # Copy to Asterisk sounds directory
+                    import shutil
+                    asterisk_file = f"/var/lib/asterisk/sounds/tts_temp_{int(time.time())}"
+                    shutil.copy(audio_file, asterisk_file + '.wav')
+                    
+                    # Play without extension
+                    result = self.agi.stream_file(f"tts_temp_{int(time.time())}", interrupt_key)
                     
                     # Cleanup
-                    try:
-                        os.unlink(audio_file)
-                    except:
-                        pass
-                    
-                    processing_time = time.time() - start_time
-                    self.ai_processor.call_metrics['tts_times'].append(processing_time)
-                    
-                    if result == 0:
-                        logger.info(f"GPU TTS played successfully ({processing_time:.2f}s)")
-                        return True
-                    else:
-                        logger.error(f"Asterisk playback failed: {result}")
-                        return False
-                else:
-                    logger.error("GPU TTS generation failed")
-                    return False
-            else:
-                # Fallback to simple playback
-                logger.warning("GPU TTS not available, using fallback")
-                return True
-                
+                    os.unlink(audio_file)
+                    os.unlink(asterisk_file + '.wav')
+                    return result == 0
         except Exception as e:
-            logger.error(f"GPU TTS error: {e}")
+            logger.error(f"TTS error: {e}")
+            # Fallback to built-in sounds
+            self.agi.stream_file('tt-weasels', interrupt_key)  # Use any existing sound
             return False
     
     def record_speech(self, prompt: str = None) -> Optional[str]:
