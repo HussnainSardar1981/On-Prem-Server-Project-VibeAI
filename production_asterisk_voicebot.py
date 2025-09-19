@@ -364,22 +364,38 @@ class ProductionVoiceBot:
             if self.gpu_tts:
                 audio_file = self.gpu_tts.generate_speech(text)
                 if audio_file:
-                    # Copy to Asterisk sounds directory
+                    # Generate unique filename ONCE
+                    timestamp = int(time.time() * 1000)  # milliseconds for uniqueness
+                    asterisk_filename = f"tts_{timestamp}"
+                    asterisk_path = f"/var/lib/asterisk/sounds/{asterisk_filename}.wav"
+                    
+                    # Copy file to Asterisk sounds directory
                     import shutil
-                    asterisk_file = f"/var/lib/asterisk/sounds/tts_temp_{int(time.time())}"
-                    shutil.copy(audio_file, asterisk_file + '.wav')
+                    shutil.copy(audio_file, asterisk_path)
                     
-                    # Play without extension
-                    result = self.agi.stream_file(f"tts_temp_{int(time.time())}", interrupt_key)
+                    # Play using the SAME filename (without extension or path)
+                    result = self.agi.stream_file(asterisk_filename, interrupt_key)
                     
-                    # Cleanup
-                    os.unlink(audio_file)
-                    os.unlink(asterisk_file + '.wav')
+                    # Cleanup both files
+                    try:
+                        os.unlink(audio_file)
+                        os.unlink(asterisk_path)
+                    except:
+                        pass
+                        
                     return result == 0
+            else:
+                # Fallback when GPU TTS not available
+                self.agi.say_alpha(text)
+                return True
+                
         except Exception as e:
             logger.error(f"TTS error: {e}")
-            # Fallback to built-in sounds
-            self.agi.stream_file('tt-weasels', interrupt_key)  # Use any existing sound
+            # Emergency fallback
+            try:
+                self.agi.say_alpha("Technical difficulty")
+            except:
+                pass
             return False
     
     def record_speech(self, prompt: str = None) -> Optional[str]:
