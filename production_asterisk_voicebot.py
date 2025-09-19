@@ -98,45 +98,62 @@ class SimplifiedVoiceBot:
     def speak_simple(self, text: str) -> bool:
         """Simple TTS using Asterisk built-in"""
         try:
-            # Use Festival or built-in TTS as fallback
-            self.agi.execute('Festival', text)
-            return True
-        except:
-            try:
-                # Ultimate fallback - spell it out
-                self.agi.say_alpha(text[:50])
+            # Clean text for telephony
+            clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?').strip()
+
+            # Try built-in say commands first
+            if len(clean_text) <= 50:
+                self.agi.say_alpha(clean_text.replace(' ', ''))
                 return True
-            except:
-                return False
+            else:
+                # Break into chunks for longer text
+                words = clean_text.split()
+                for i in range(0, len(words), 3):
+                    chunk = ''.join(words[i:i+3])
+                    self.agi.say_alpha(chunk)
+                return True
+        except Exception as e:
+            logger.error(f"Speech error: {e}")
+            return False
     
     def record_audio(self) -> Optional[str]:
-        """Record user audio"""
+        """Record user audio with proper AGI commands"""
         try:
-            temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
-            record_name = temp_file.name.replace('.wav', '')
-            temp_file.close()
-            
+            # Create recording file in /tmp with proper permissions
+            temp_dir = '/tmp'
+            record_name = f"{temp_dir}/voicebot_record_{int(time.time())}"
+
             logger.info(f"Recording to {record_name}")
-            
-            # Record with beep
-            self.agi.execute('Playback', 'beep')
-            
+
+            # Play beep using correct AGI command
+            try:
+                self.agi.stream_file('beep', '')
+            except:
+                # Fallback - no beep
+                pass
+
+            # Record with correct parameters for telephony
             result = self.agi.record_file(
-                record_name,
-                'wav',
-                '#',
-                self.config.record_timeout * 1000,
-                0,
-                True,
-                self.config.silence_threshold
+                record_name,          # filename (no extension)
+                format='wav',         # format parameter
+                escape_digits='#*0',  # escape digits
+                timeout=self.config.record_timeout * 1000,  # timeout in ms
+                offset=0,             # offset
+                beep=1,              # beep (1=yes, 0=no)
+                silence=self.config.silence_threshold  # silence threshold
             )
-            
+
+            # Check if recording was created
             wav_file = record_name + '.wav'
-            if os.path.exists(wav_file) and os.path.getsize(wav_file) > 1024:
-                return wav_file
-            
+            if os.path.exists(wav_file):
+                file_size = os.path.getsize(wav_file)
+                logger.info(f"Recording created: {file_size} bytes")
+                if file_size > 1024:  # At least 1KB
+                    return wav_file
+
+            logger.warning("Recording too small or failed")
             return None
-            
+
         except Exception as e:
             logger.error(f"Recording failed: {e}")
             return None
@@ -249,3 +266,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+   
