@@ -119,53 +119,54 @@ class ProfessionalVoiceBot:
             clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
             logger.info(f"Enterprise TTS: {clean_text[:50]}...")
 
-            # Method 1: Neural TTS (H100 GPU-Accelerated - Professional Quality)
+            # Method 1: Festival TTS (Higher Quality - per research)
             try:
-                from TTS.api import TTS
-                import torch
-
-                temp_file = f"/tmp/neural_tts_{int(time.time())}_{os.getpid()}"
+                temp_file = f"/tmp/festival_tts_{int(time.time())}_{os.getpid()}"
                 wav_file = f"{temp_file}.wav"
+                txt_file = f"{temp_file}.txt"
 
-                # Initialize neural TTS with GPU acceleration
-                if not hasattr(self, '_tts_engine'):
-                    logger.info("Initializing Neural TTS on H100 GPU...")
-                    self._tts_engine = TTS('tts_models/en/ljspeech/tacotron2-DDC', gpu=torch.cuda.is_available())
-                    logger.info("Neural TTS engine loaded successfully")
+                # Write text to file for Festival
+                with open(txt_file, 'w') as f:
+                    f.write(clean_text)
 
-                # Generate professional neural speech
-                start_time = time.time()
-                self._tts_engine.tts_to_file(text=clean_text, file_path=wav_file)
-                synthesis_time = time.time() - start_time
+                # Festival with professional settings
+                festival_cmd = f'(utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9)'
 
-                if os.path.exists(wav_file) and os.path.getsize(wav_file) > 1000:
-                    # Play through Asterisk
+                cmd = ['festival', '--batch', '--pipe']
+
+                result = subprocess.run(
+                    cmd,
+                    input=f'(utt.save.wave (utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9) "{wav_file}")',
+                    text=True,
+                    capture_output=True,
+                    timeout=8
+                )
+
+                if result.returncode == 0 and os.path.exists(wav_file) and os.path.getsize(wav_file) > 1000:
                     self.agi.stream_file(temp_file)
-
                     # Cleanup
-                    try:
-                        os.unlink(wav_file)
-                    except:
-                        pass
-
-                    logger.info(f"Neural TTS successful: {synthesis_time:.3f}s (professional quality)")
+                    for cleanup_file in [wav_file, txt_file]:
+                        try:
+                            os.unlink(cleanup_file)
+                        except:
+                            pass
+                    logger.info("Festival TTS successful (professional quality)")
                     return True
 
-            except ImportError:
-                logger.warning("Neural TTS not available, trying fallback")
-            except Exception as e:
-                logger.warning(f"Neural TTS error: {e}, trying fallback")
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.warning("Festival not available, trying espeak")
 
             # Method 2: Improved espeak (fallback)
             try:
                 temp_file = f"/tmp/enterprise_tts_{int(time.time())}_{os.getpid()}"
                 wav_file = f"{temp_file}.wav"
 
-                # Professional espeak parameters for better voice quality
+                # Professional espeak parameters optimized for VoIP (8kHz)
+                temp_wav = f"{wav_file}.tmp"
                 cmd = [
                     'espeak',
                     clean_text,
-                    '-w', wav_file,
+                    '-w', temp_wav,
                     '-s', '140',      # Slightly slower for clarity
                     '-p', '40',       # Lower pitch (more professional)
                     '-a', '100',      # Full amplitude
@@ -184,17 +185,27 @@ class ProfessionalVoiceBot:
                     cwd='/tmp'
                 )
 
-                if result.returncode == 0 and os.path.exists(wav_file):
-                    file_size = os.path.getsize(wav_file)
-                    logger.info(f"espeak generated {file_size} bytes")
+                if result.returncode == 0 and os.path.exists(temp_wav):
+                    # Convert to 8kHz mono for VoIP compatibility
+                    convert_result = subprocess.run([
+                        'sox', temp_wav, '-r', '8000', '-c', '1', wav_file
+                    ], capture_output=True)
 
-                    if file_size > 1000:  # Ensure reasonable audio file size
-                        # Play through Asterisk
-                        self.agi.stream_file(temp_file)
-                        # Cleanup
-                        os.unlink(wav_file)
-                        logger.info("Enterprise espeak TTS successful")
-                        return True
+                    if convert_result.returncode == 0 and os.path.exists(wav_file):
+                        file_size = os.path.getsize(wav_file)
+                        logger.info(f"espeak generated {file_size} bytes (8kHz VoIP format)")
+
+                        if file_size > 1000:  # Ensure reasonable audio file size
+                            # Play through Asterisk
+                            self.agi.stream_file(temp_file)
+                            # Cleanup
+                            for cleanup_file in [wav_file, temp_wav]:
+                                try:
+                                    os.unlink(cleanup_file)
+                                except:
+                                    pass
+                            logger.info("Enterprise espeak TTS successful (8kHz)")
+                            return True
                     else:
                         logger.warning(f"espeak generated small file: {file_size} bytes")
                         if os.path.exists(wav_file):
