@@ -119,42 +119,42 @@ class ProfessionalVoiceBot:
             clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
             logger.info(f"Enterprise TTS: {clean_text[:50]}...")
 
-            # Method 1: Festival TTS (Higher Quality - per research)
+            # Method 1: Neural TTS (H100 GPU-Accelerated - Professional Quality)
             try:
-                temp_file = f"/tmp/festival_tts_{int(time.time())}_{os.getpid()}"
+                from TTS.api import TTS
+                import torch
+
+                temp_file = f"/tmp/neural_tts_{int(time.time())}_{os.getpid()}"
                 wav_file = f"{temp_file}.wav"
-                txt_file = f"{temp_file}.txt"
 
-                # Write text to file for Festival
-                with open(txt_file, 'w') as f:
-                    f.write(clean_text)
+                # Initialize neural TTS with GPU acceleration
+                if not hasattr(self, '_tts_engine'):
+                    logger.info("Initializing Neural TTS on H100 GPU...")
+                    self._tts_engine = TTS('tts_models/en/ljspeech/tacotron2-DDC', gpu=torch.cuda.is_available())
+                    logger.info("Neural TTS engine loaded successfully")
 
-                # Festival with professional settings
-                festival_cmd = f'(utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9)'
+                # Generate professional neural speech
+                start_time = time.time()
+                self._tts_engine.tts_to_file(text=clean_text, file_path=wav_file)
+                synthesis_time = time.time() - start_time
 
-                cmd = ['festival', '--batch', '--pipe']
-
-                result = subprocess.run(
-                    cmd,
-                    input=f'(utt.save.wave (utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9) "{wav_file}")',
-                    text=True,
-                    capture_output=True,
-                    timeout=8
-                )
-
-                if result.returncode == 0 and os.path.exists(wav_file) and os.path.getsize(wav_file) > 1000:
+                if os.path.exists(wav_file) and os.path.getsize(wav_file) > 1000:
+                    # Play through Asterisk
                     self.agi.stream_file(temp_file)
+
                     # Cleanup
-                    for cleanup_file in [wav_file, txt_file]:
-                        try:
-                            os.unlink(cleanup_file)
-                        except:
-                            pass
-                    logger.info("Festival TTS successful (professional quality)")
+                    try:
+                        os.unlink(wav_file)
+                    except:
+                        pass
+
+                    logger.info(f"Neural TTS successful: {synthesis_time:.3f}s (professional quality)")
                     return True
 
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                logger.warning("Festival not available, trying espeak")
+            except ImportError:
+                logger.warning("Neural TTS not available, trying fallback")
+            except Exception as e:
+                logger.warning(f"Neural TTS error: {e}, trying fallback")
 
             # Method 2: Improved espeak (fallback)
             try:
@@ -813,3 +813,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
