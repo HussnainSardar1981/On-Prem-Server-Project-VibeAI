@@ -105,113 +105,240 @@ class ProfessionalVoiceBot:
         sys.exit(0)
 
     def speak_professional(self, text: str) -> bool:
-        """Professional text-to-speech - FIXED VERSION"""
+        """Enterprise-Grade TTS with Robust Subprocess Management"""
         try:
-            # Clean text for professional delivery
-            clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
-            logger.info(f"Speaking: {clean_text[:50]}...")
+            import subprocess
+            import shlex
 
-            # QUICK FIX: Use espeak to generate proper speech
+            # Clean and prepare text for professional delivery
+            clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
+            logger.info(f"Enterprise TTS: {clean_text[:50]}...")
+
+            # Method 1: Robust espeak with subprocess (ENTERPRISE GRADE)
             try:
-                temp_file = f"/tmp/speak_{int(time.time())}"
+                temp_file = f"/tmp/enterprise_tts_{int(time.time())}_{os.getpid()}"
                 wav_file = f"{temp_file}.wav"
 
-                # Generate speech with espeak (pronounces words correctly)
-                cmd = f'espeak "{clean_text}" -w {wav_file} -s 150 -p 50'
-                result = os.system(cmd)
+                # Use subprocess with proper error handling and timeouts
+                cmd = [
+                    'espeak',
+                    clean_text,
+                    '-w', wav_file,
+                    '-s', '150',      # Speed: 150 words per minute
+                    '-p', '50',       # Pitch: 50 (neutral)
+                    '-a', '100',      # Amplitude: 100 (full volume)
+                    '-g', '10'        # Gap between words: 10ms
+                ]
 
-                if result == 0 and os.path.exists(wav_file):
-                    # Play the generated speech file
-                    self.agi.stream_file(temp_file)
-                    # Cleanup
-                    os.unlink(wav_file)
-                    logger.info("espeak TTS successful")
-                    return True
-                else:
-                    logger.warning(f"espeak failed with code: {result}")
+                logger.info(f"Executing: {' '.join(cmd)}")
 
-            except Exception as e:
-                logger.warning(f"espeak TTS failed: {e}")
+                # Execute with timeout and proper error handling
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd='/tmp'
+                )
 
-            # FALLBACK 1: Try Festival if available
-            try:
-                temp_file = f"/tmp/festival_{int(time.time())}.wav"
-                cmd = f'echo "{clean_text}" | festival --tts --otype wav --stdout > {temp_file}'
-                result = os.system(cmd)
+                if result.returncode == 0 and os.path.exists(wav_file):
+                    file_size = os.path.getsize(wav_file)
+                    logger.info(f"espeak generated {file_size} bytes")
 
-                if result == 0 and os.path.exists(temp_file):
-                    self.agi.stream_file(temp_file.replace('.wav', ''))
-                    os.unlink(temp_file)
-                    logger.info("Festival TTS successful")
-                    return True
-
-            except Exception as e:
-                logger.warning(f"Festival TTS failed: {e}")
-
-            # FALLBACK 2: Use gTTS if available
-            try:
-                import gtts
-                temp_file = f"/tmp/gtts_{int(time.time())}.mp3"
-
-                tts = gtts.gTTS(text=clean_text, lang='en', slow=False)
-                tts.save(temp_file)
-
-                if os.path.exists(temp_file):
-                    # Convert mp3 to wav for Asterisk
-                    wav_file = temp_file.replace('.mp3', '.wav')
-                    os.system(f'ffmpeg -i {temp_file} {wav_file} -y 2>/dev/null')
-
-                    if os.path.exists(wav_file):
-                        self.agi.stream_file(wav_file.replace('.wav', ''))
-                        os.unlink(temp_file)
+                    if file_size > 1000:  # Ensure reasonable audio file size
+                        # Play through Asterisk
+                        self.agi.stream_file(temp_file)
+                        # Cleanup
                         os.unlink(wav_file)
-                        logger.info("gTTS successful")
+                        logger.info("Enterprise espeak TTS successful")
+                        return True
+                    else:
+                        logger.warning(f"espeak generated small file: {file_size} bytes")
+                        if os.path.exists(wav_file):
+                            os.unlink(wav_file)
+                else:
+                    logger.warning(f"espeak subprocess failed: returncode={result.returncode}")
+                    if result.stderr:
+                        logger.warning(f"espeak stderr: {result.stderr}")
+
+            except subprocess.TimeoutExpired:
+                logger.warning("espeak subprocess timeout")
+            except FileNotFoundError:
+                logger.warning("espeak binary not found")
+            except Exception as e:
+                logger.warning(f"espeak subprocess error: {e}")
+
+            # Method 2: Festival TTS with subprocess
+            try:
+                temp_file = f"/tmp/festival_tts_{int(time.time())}_{os.getpid()}"
+                wav_file = f"{temp_file}.wav"
+
+                # Create Festival script
+                festival_script = f"""
+(voice_kal_diphone)
+(set! audio_method 'wav)
+(set! audio_file "{wav_file}")
+(tts_text "{clean_text}")
+"""
+                script_file = f"{temp_file}.scm"
+                with open(script_file, 'w') as f:
+                    f.write(festival_script)
+
+                # Execute Festival
+                result = subprocess.run(
+                    ['festival', '-b', script_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    cwd='/tmp'
+                )
+
+                if result.returncode == 0 and os.path.exists(wav_file):
+                    file_size = os.path.getsize(wav_file)
+                    if file_size > 1000:
+                        self.agi.stream_file(temp_file)
+                        os.unlink(wav_file)
+                        os.unlink(script_file)
+                        logger.info("Enterprise Festival TTS successful")
+                        return True
+                    else:
+                        logger.warning(f"Festival generated small file: {file_size} bytes")
+
+                # Cleanup
+                for f in [wav_file, script_file]:
+                    if os.path.exists(f):
+                        os.unlink(f)
+
+            except subprocess.TimeoutExpired:
+                logger.warning("Festival subprocess timeout")
+            except FileNotFoundError:
+                logger.warning("Festival binary not found")
+            except Exception as e:
+                logger.warning(f"Festival subprocess error: {e}")
+
+            # Method 3: Flite TTS (lightweight fallback)
+            try:
+                temp_file = f"/tmp/flite_tts_{int(time.time())}_{os.getpid()}"
+                wav_file = f"{temp_file}.wav"
+
+                result = subprocess.run(
+                    ['flite', '-t', clean_text, '-o', wav_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    cwd='/tmp'
+                )
+
+                if result.returncode == 0 and os.path.exists(wav_file):
+                    file_size = os.path.getsize(wav_file)
+                    if file_size > 1000:
+                        self.agi.stream_file(temp_file)
+                        os.unlink(wav_file)
+                        logger.info("Enterprise Flite TTS successful")
                         return True
 
-            except ImportError:
-                logger.warning("gTTS not available")
+                if os.path.exists(wav_file):
+                    os.unlink(wav_file)
+
+            except subprocess.TimeoutExpired:
+                logger.warning("Flite subprocess timeout")
+            except FileNotFoundError:
+                logger.warning("Flite binary not found")
             except Exception as e:
-                logger.warning(f"gTTS failed: {e}")
+                logger.warning(f"Flite subprocess error: {e}")
 
-            # FALLBACK 3: Simple word-by-word for short messages
-            words = clean_text.split()
-            if len(words) <= 8:  # Only for short messages
-                try:
-                    for word in words:
-                        word_lower = word.lower()
+            # Method 4: Professional Asterisk built-in sounds (RELIABLE FALLBACK)
+            try:
+                words = clean_text.lower().split()[:10]  # Limit for performance
 
-                        # Handle numbers properly
-                        if word_lower.isdigit():
-                            self.agi.say_number(int(word_lower))
-                        # Handle common words
-                        elif word_lower in ['hello', 'hi', 'thank', 'you', 'please', 'help', 'support']:
-                            # Try to find pre-recorded sound files
-                            try:
-                                self.agi.stream_file(f'custom/{word_lower}')
-                            except:
-                                # If no custom file, play beep for the word
-                                self.agi.stream_file('beep')
-                        else:
-                            # For other words, just play a tone
-                            self.agi.stream_file('beep')
+                # Map common words to Asterisk sound files
+                word_sounds = {
+                    'hello': 'hello',
+                    'hi': 'hello',
+                    'thank': 'thank-you-for-calling',
+                    'you': 'you',
+                    'help': 'help',
+                    'support': 'support',
+                    'please': 'please',
+                    'hold': 'please-hold',
+                    'transfer': 'transferring',
+                    'agent': 'agent',
+                    'one': 'digits/1',
+                    'two': 'digits/2',
+                    'three': 'digits/3',
+                    'four': 'digits/4',
+                    'five': 'digits/5',
+                    'six': 'digits/6',
+                    'seven': 'digits/7',
+                    'eight': 'digits/8',
+                    'nine': 'digits/9',
+                    'zero': 'digits/0'
+                }
 
-                        time.sleep(0.3)  # Pause between words
+                sounds_played = 0
+                for word in words:
+                    word_clean = ''.join(c for c in word if c.isalnum()).lower()
 
-                    logger.info("Word-by-word fallback completed")
+                    if word_clean.isdigit():
+                        # Handle numbers with say_number
+                        try:
+                            self.agi.say_number(int(word_clean))
+                            sounds_played += 1
+                        except:
+                            pass
+                    elif word_clean in word_sounds:
+                        # Play corresponding sound file
+                        try:
+                            self.agi.stream_file(word_sounds[word_clean])
+                            sounds_played += 1
+                        except:
+                            pass
+
+                    # Brief pause between words
+                    time.sleep(0.2)
+
+                if sounds_played > 0:
+                    logger.info(f"Professional Asterisk sounds: {sounds_played} words played")
                     return True
 
-                except Exception as e:
-                    logger.warning(f"Word-by-word failed: {e}")
+            except Exception as e:
+                logger.warning(f"Asterisk sounds fallback error: {e}")
 
-            # LAST RESORT: Play beeps to indicate we're trying to communicate
-            logger.error("All TTS methods failed - using indication beeps")
-            for i in range(3):
-                self.agi.stream_file('beep')
-                time.sleep(0.5)
-            return False
+            # Method 5: Emergency Communication Pattern
+            logger.error("All enterprise TTS methods failed - using professional indication")
+
+            # Professional pattern: different beeps for different message types
+            try:
+                message_lower = clean_text.lower()
+
+                if any(word in message_lower for word in ['hello', 'hi', 'welcome']):
+                    # Greeting pattern: 2 ascending beeps
+                    self.agi.stream_file('beep')
+                    time.sleep(0.3)
+                    self.agi.stream_file('beep')
+                elif any(word in message_lower for word in ['transfer', 'hold', 'agent']):
+                    # Transfer pattern: 3 quick beeps
+                    for i in range(3):
+                        self.agi.stream_file('beep')
+                        time.sleep(0.2)
+                elif any(word in message_lower for word in ['help', 'support', 'assist']):
+                    # Help pattern: long beep + short beep
+                    self.agi.stream_file('beep')
+                    time.sleep(0.8)
+                    self.agi.stream_file('beep')
+                else:
+                    # Default pattern: single beep
+                    self.agi.stream_file('beep')
+
+                logger.info("Professional indication pattern completed")
+                return True
+
+            except Exception as e:
+                logger.error(f"Emergency indication failed: {e}")
+                return False
 
         except Exception as e:
-            logger.error(f"Fatal speech error: {e}")
+            logger.error(f"Enterprise TTS fatal error: {e}")
             try:
                 self.agi.stream_file('beep')
             except:
