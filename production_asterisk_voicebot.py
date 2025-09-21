@@ -90,6 +90,10 @@ class ProfessionalVoiceBot:
             self.silent_attempts = 0
             self.escalation_requested = False
 
+            # Conversation context tracking
+            self.conversation_history = []
+            self.has_greeted = False
+
             # Get caller information
             self.caller_id = self.agi.env.get('agi_callerid', 'Unknown')
             self.channel = self.agi.env.get('agi_channel', 'Unknown')
@@ -577,11 +581,24 @@ class ProfessionalVoiceBot:
             if any(word in customer_lower for word in ['password', 'login', 'access']):
                 return "For login issues, I can help reset your password or connect you with our security team for account access problems."
 
-            # Try Ollama for other queries (with timeout)
+            # Try Ollama for other queries (with conversation context)
             try:
+                # Build conversation context
+                context = ""
+                if self.conversation_history:
+                    recent_context = self.conversation_history[-2:]  # Last 2 exchanges
+                    for exchange in recent_context:
+                        context += f"Previous - Customer: {exchange['customer']} | Assistant: {exchange['response']}\n"
+
+                # Create context-aware prompt
+                if self.has_greeted:
+                    prompt = f"Continue conversation as {self.config.bot_name} from {self.config.company_name}. Keep responses under 25 words.\n{context}Current - Customer: {customer_input}\n\nResponse:"
+                else:
+                    prompt = f"You are {self.config.bot_name}, professional IT support for {self.config.company_name}. Keep responses under 25 words. Customer said: {customer_input}\n\nProfessional response:"
+
                 payload = {
                     "model": self.config.ollama_model,
-                    "prompt": f"You are {self.config.bot_name}, professional IT support for {self.config.company_name}. Keep responses under 25 words. Customer said: {customer_input}\n\nProfessional response:",
+                    "prompt": prompt,
                     "stream": False,
                     "options": {"temperature": 0.3, "max_tokens": 50}
                 }
@@ -684,6 +701,17 @@ class ProfessionalVoiceBot:
 
                 if not self.speak_professional(response):
                     return self.transfer_to_human("technical difficulties")
+
+                # Track conversation history for context
+                self.conversation_history.append({
+                    'customer': customer_text,
+                    'response': response
+                })
+                self.has_greeted = True
+
+                # Keep only last 4 exchanges to prevent memory bloat
+                if len(self.conversation_history) > 4:
+                    self.conversation_history = self.conversation_history[-4:]
 
                 # Check if conversation should end
                 if any(keyword in customer_text.lower() for keyword in self.config.goodbye_keywords):
