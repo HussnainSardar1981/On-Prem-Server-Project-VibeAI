@@ -105,29 +105,115 @@ class ProfessionalVoiceBot:
         sys.exit(0)
 
     def speak_professional(self, text: str) -> bool:
-        """Professional text-to-speech with fallbacks"""
+        """Professional text-to-speech - FIXED VERSION"""
         try:
             # Clean text for professional delivery
             clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
             logger.info(f"Speaking: {clean_text[:50]}...")
 
-            # Use say_alpha for reliable delivery
-            if len(clean_text) <= 100:
-                self.agi.say_alpha(clean_text.replace(' ', ''))
-                return True
-            else:
-                # Break long messages into chunks
-                words = clean_text.split()
-                for i in range(0, len(words), 4):
-                    chunk = ''.join(words[i:i+4])
-                    self.agi.say_alpha(chunk)
-                return True
+            # QUICK FIX: Use espeak to generate proper speech
+            try:
+                temp_file = f"/tmp/speak_{int(time.time())}"
+                wav_file = f"{temp_file}.wav"
+
+                # Generate speech with espeak (pronounces words correctly)
+                cmd = f'espeak "{clean_text}" -w {wav_file} -s 150 -p 50'
+                result = os.system(cmd)
+
+                if result == 0 and os.path.exists(wav_file):
+                    # Play the generated speech file
+                    self.agi.stream_file(temp_file)
+                    # Cleanup
+                    os.unlink(wav_file)
+                    logger.info("espeak TTS successful")
+                    return True
+                else:
+                    logger.warning(f"espeak failed with code: {result}")
+
+            except Exception as e:
+                logger.warning(f"espeak TTS failed: {e}")
+
+            # FALLBACK 1: Try Festival if available
+            try:
+                temp_file = f"/tmp/festival_{int(time.time())}.wav"
+                cmd = f'echo "{clean_text}" | festival --tts --otype wav --stdout > {temp_file}'
+                result = os.system(cmd)
+
+                if result == 0 and os.path.exists(temp_file):
+                    self.agi.stream_file(temp_file.replace('.wav', ''))
+                    os.unlink(temp_file)
+                    logger.info("Festival TTS successful")
+                    return True
+
+            except Exception as e:
+                logger.warning(f"Festival TTS failed: {e}")
+
+            # FALLBACK 2: Use gTTS if available
+            try:
+                import gtts
+                temp_file = f"/tmp/gtts_{int(time.time())}.mp3"
+
+                tts = gtts.gTTS(text=clean_text, lang='en', slow=False)
+                tts.save(temp_file)
+
+                if os.path.exists(temp_file):
+                    # Convert mp3 to wav for Asterisk
+                    wav_file = temp_file.replace('.mp3', '.wav')
+                    os.system(f'ffmpeg -i {temp_file} {wav_file} -y 2>/dev/null')
+
+                    if os.path.exists(wav_file):
+                        self.agi.stream_file(wav_file.replace('.wav', ''))
+                        os.unlink(temp_file)
+                        os.unlink(wav_file)
+                        logger.info("gTTS successful")
+                        return True
+
+            except ImportError:
+                logger.warning("gTTS not available")
+            except Exception as e:
+                logger.warning(f"gTTS failed: {e}")
+
+            # FALLBACK 3: Simple word-by-word for short messages
+            words = clean_text.split()
+            if len(words) <= 8:  # Only for short messages
+                try:
+                    for word in words:
+                        word_lower = word.lower()
+
+                        # Handle numbers properly
+                        if word_lower.isdigit():
+                            self.agi.say_number(int(word_lower))
+                        # Handle common words
+                        elif word_lower in ['hello', 'hi', 'thank', 'you', 'please', 'help', 'support']:
+                            # Try to find pre-recorded sound files
+                            try:
+                                self.agi.stream_file(f'custom/{word_lower}')
+                            except:
+                                # If no custom file, play beep for the word
+                                self.agi.stream_file('beep')
+                        else:
+                            # For other words, just play a tone
+                            self.agi.stream_file('beep')
+
+                        time.sleep(0.3)  # Pause between words
+
+                    logger.info("Word-by-word fallback completed")
+                    return True
+
+                except Exception as e:
+                    logger.warning(f"Word-by-word failed: {e}")
+
+            # LAST RESORT: Play beeps to indicate we're trying to communicate
+            logger.error("All TTS methods failed - using indication beeps")
+            for i in range(3):
+                self.agi.stream_file('beep')
+                time.sleep(0.5)
+            return False
 
         except Exception as e:
-            logger.error(f"Speech error: {e}")
+            logger.error(f"Fatal speech error: {e}")
             try:
-                # Emergency fallback
-                self.agi.say_alpha("TECHNICAL DIFFICULTIES")
+                self.agi.stream_file('beep')
             except:
                 pass
             return False
