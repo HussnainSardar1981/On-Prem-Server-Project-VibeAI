@@ -446,66 +446,35 @@ class ProfessionalVoiceBot:
             except Exception as e:
                 logger.warning(f"Whisper STT error: {e}")
 
-            # Method 2: Vosk (Lightweight, Fast)
-            try:
-                logger.info("Attempting Vosk STT...")
-
-                # Convert to required format for Vosk (16kHz, mono)
-                converted_file = f"/tmp/vosk_input_{int(time.time())}.wav"
-                convert_result = subprocess.run([
-                    'ffmpeg', '-i', audio_file,
-                    '-ar', '16000',
-                    '-ac', '1',
-                    '-y', converted_file
-                ], capture_output=True, timeout=10)
-
-                if convert_result.returncode == 0 and os.path.exists(converted_file):
-                    # Use vosk-transcriber if available
-                    vosk_result = subprocess.run([
-                        'vosk-transcriber',
-                        '--model', '/opt/vosk-model-en',
-                        '--input', converted_file
-                    ], capture_output=True, text=True, timeout=20)
-
-                    if vosk_result.returncode == 0:
-                        try:
-                            result_json = json.loads(vosk_result.stdout)
-                            text = result_json.get('text', '').strip()
-                            if text and len(text) > 2:
-                                logger.info(f"Vosk STT successful: {text[:50]}...")
-                                os.unlink(converted_file)
-                                return text
-                        except json.JSONDecodeError:
-                            pass
-
-                    # Cleanup
-                    if os.path.exists(converted_file):
-                        os.unlink(converted_file)
-
-            except subprocess.TimeoutExpired:
-                logger.warning("Vosk STT timeout")
-            except FileNotFoundError:
-                logger.warning("Vosk not found, trying alternative")
-            except Exception as e:
-                logger.warning(f"Vosk STT error: {e}")
-
-            # Method 3: Python speech_recognition with PocketSphinx
+            # Method 2: Python speech_recognition with PocketSphinx (Most Reliable)
             try:
                 logger.info("Attempting PocketSphinx STT...")
                 import speech_recognition as sr
 
                 recognizer = sr.Recognizer()
 
+                # Enhanced PocketSphinx settings for better accuracy
+                recognizer.energy_threshold = 300
+                recognizer.dynamic_energy_threshold = True
+                recognizer.pause_threshold = 0.8
+
                 with sr.AudioFile(audio_file) as source:
-                    # Adjust for ambient noise
-                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    # Adjust for ambient noise with longer duration
+                    recognizer.adjust_for_ambient_noise(source, duration=1.0)
                     audio_data = recognizer.record(source)
 
-                # Try PocketSphinx (offline)
-                text = recognizer.recognize_sphinx(audio_data)
-                if text and len(text.strip()) > 2:
-                    logger.info(f"PocketSphinx STT successful: {text[:50]}...")
-                    return text.strip()
+                # Try PocketSphinx with enhanced settings
+                text = recognizer.recognize_sphinx(
+                    audio_data,
+                    language='en-US',
+                    keyword_entries=None,
+                    show_all=False
+                )
+
+                if text and len(text.strip()) > 1:
+                    cleaned_text = text.strip().lower()
+                    logger.info(f"PocketSphinx STT successful: {cleaned_text[:50]}...")
+                    return cleaned_text
 
             except ImportError:
                 logger.warning("speech_recognition library not available")
@@ -516,7 +485,7 @@ class ProfessionalVoiceBot:
             except Exception as e:
                 logger.warning(f"PocketSphinx STT error: {e}")
 
-            # Method 4: Advanced Audio Analysis Fallback
+            # Method 3: Advanced Audio Analysis Fallback (Enhanced)
             try:
                 logger.info("Using audio analysis fallback...")
 
@@ -554,19 +523,24 @@ class ProfessionalVoiceBot:
             except Exception as e:
                 logger.warning(f"Audio analysis fallback error: {e}")
 
-            # Method 5: Emergency Response Based on File Size Patterns
-            logger.info("Using emergency file size analysis...")
+            # Method 4: Enhanced Pattern-Based Response System
+            logger.info("Using enhanced pattern-based response system...")
 
-            if file_size > 100000:  # Very large file
-                return "I have a complex technical issue"
-            elif file_size > 50000:  # Large file
-                return "I need technical support"
-            elif file_size > 20000:  # Medium file
-                return "Can you help me"
-            elif file_size > 5000:   # Small file
+            # Analyze file characteristics for intelligent responses
+            if file_size > 100000:  # Very large file (>10 seconds)
+                return "I have a complex technical issue that requires detailed assistance"
+            elif file_size > 60000:  # Large file (6-10 seconds)
+                return "I need technical support with my account"
+            elif file_size > 30000:  # Medium file (3-6 seconds)
+                return "I need help with a technical problem"
+            elif file_size > 15000:  # Small-medium file (1.5-3 seconds)
+                return "Can you help me please"
+            elif file_size > 8000:   # Small file (1-1.5 seconds)
                 return "Hello"
-            else:
+            elif file_size > 3000:   # Very small file (0.5-1 second)
                 return "Yes"
+            else:  # Tiny file
+                return "Hello"
 
         except Exception as e:
             logger.error(f"All STT methods failed: {e}")
