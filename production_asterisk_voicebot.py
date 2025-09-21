@@ -68,7 +68,7 @@ class ProfessionalConfig:
         ]
 
         # AI Settings
-        self.whisper_model = "tiny"
+        self.whisper_model = "base"
         self.ollama_url = "http://127.0.0.1:11434/api/generate"
         self.ollama_model = "orca2:7b"
 
@@ -93,6 +93,7 @@ class ProfessionalVoiceBot:
             # Conversation context tracking
             self.conversation_history = []
             self.has_greeted = False
+            self.first_interaction = True
 
             # Get caller information
             self.caller_id = self.agi.env.get('agi_callerid', 'Unknown')
@@ -423,11 +424,11 @@ class ProfessionalVoiceBot:
                 # Use whisper command line (if installed)
                 result = subprocess.run([
                     'whisper', audio_file,
-                    '--model', 'tiny',
+                    '--model', 'base',
                     '--language', 'en',
                     '--output_format', 'txt',
                     '--output_dir', '/tmp'
-                ], capture_output=True, text=True, timeout=30)
+                ], capture_output=True, text=True, timeout=10)
 
                 if result.returncode == 0:
                     # Look for generated text file
@@ -591,10 +592,11 @@ class ProfessionalVoiceBot:
                         context += f"Previous - Customer: {exchange['customer']} | Assistant: {exchange['response']}\n"
 
                 # Create context-aware prompt
-                if self.has_greeted:
-                    prompt = f"Continue conversation as {self.config.bot_name} from {self.config.company_name}. Keep responses under 25 words.\n{context}Current - Customer: {customer_input}\n\nResponse:"
-                else:
+                if self.first_interaction:
                     prompt = f"You are {self.config.bot_name}, professional IT support for {self.config.company_name}. Keep responses under 25 words. Customer said: {customer_input}\n\nProfessional response:"
+                    self.first_interaction = False
+                else:
+                    prompt = f"Continue conversation as {self.config.bot_name} from {self.config.company_name}. Keep responses under 25 words.\n{context}Current - Customer: {customer_input}\n\nResponse:"
 
                 payload = {
                     "model": self.config.ollama_model,
