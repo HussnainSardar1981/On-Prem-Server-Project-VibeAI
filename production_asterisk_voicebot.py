@@ -119,20 +119,58 @@ class ProfessionalVoiceBot:
             clean_text = ''.join(c for c in text if c.isalnum() or c in ' .,!?-').strip()
             logger.info(f"Enterprise TTS: {clean_text[:50]}...")
 
-            # Method 1: Robust espeak with subprocess (ENTERPRISE GRADE)
+            # Method 1: Festival TTS (Higher Quality - per research)
+            try:
+                temp_file = f"/tmp/festival_tts_{int(time.time())}_{os.getpid()}"
+                wav_file = f"{temp_file}.wav"
+                txt_file = f"{temp_file}.txt"
+
+                # Write text to file for Festival
+                with open(txt_file, 'w') as f:
+                    f.write(clean_text)
+
+                # Festival with professional settings
+                festival_cmd = f'(utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9)'
+
+                cmd = ['festival', '--batch', '--pipe']
+
+                result = subprocess.run(
+                    cmd,
+                    input=f'(utt.save.wave (utt.wave.rescale (utt.wave.resample (utt.synth (Utterance Text "{clean_text}")) 8000) 0.9) "{wav_file}")',
+                    text=True,
+                    capture_output=True,
+                    timeout=8
+                )
+
+                if result.returncode == 0 and os.path.exists(wav_file) and os.path.getsize(wav_file) > 1000:
+                    self.agi.stream_file(temp_file)
+                    # Cleanup
+                    for cleanup_file in [wav_file, txt_file]:
+                        try:
+                            os.unlink(cleanup_file)
+                        except:
+                            pass
+                    logger.info("Festival TTS successful (professional quality)")
+                    return True
+
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                logger.warning("Festival not available, trying espeak")
+
+            # Method 2: Improved espeak (fallback)
             try:
                 temp_file = f"/tmp/enterprise_tts_{int(time.time())}_{os.getpid()}"
                 wav_file = f"{temp_file}.wav"
 
-                # Use subprocess with proper error handling and timeouts
+                # Professional espeak parameters for better voice quality
                 cmd = [
                     'espeak',
                     clean_text,
                     '-w', wav_file,
-                    '-s', '150',      # Speed: 150 words per minute
-                    '-p', '50',       # Pitch: 50 (neutral)
-                    '-a', '100',      # Amplitude: 100 (full volume)
-                    '-g', '10'        # Gap between words: 10ms
+                    '-s', '140',      # Slightly slower for clarity
+                    '-p', '40',       # Lower pitch (more professional)
+                    '-a', '100',      # Full amplitude
+                    '-g', '8',        # Shorter gaps (more natural)
+                    '-v', 'en-us+f3' # Female voice variant 3 (warmer)
                 ]
 
                 logger.info(f"Executing: {' '.join(cmd)}")
