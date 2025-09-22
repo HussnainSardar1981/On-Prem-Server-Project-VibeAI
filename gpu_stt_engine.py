@@ -37,7 +37,7 @@ class GPUSTTEngine:
     def __init__(self,
                  model_size: str = "large",
                  device: str = "cuda",
-                 compute_type: str = "float16",
+                 compute_type: str = "float32",
                  batch_size: int = 1):
         """
         Initialize GPU STT engine
@@ -148,7 +148,7 @@ class GPUSTTEngine:
                     dummy_audio,
                     language="en",
                     task="transcribe",
-                    fp16=self.compute_type == "float16"
+                    fp16=False  # Force float32 to avoid type conflicts
                 )
 
                 if self.device == "cuda":
@@ -536,3 +536,4 @@ if __name__ == "__main__":
     # Cleanup
     stt_engine.cleanup()
     print("=== STT Test Complete ===")
+    
