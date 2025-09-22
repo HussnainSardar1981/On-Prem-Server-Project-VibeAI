@@ -23,9 +23,9 @@ def test_tts():
             gpu_name = torch.cuda.get_device_name(0)
             print(f"   GPU: {gpu_name}")
 
-        # Load the reliable model
+        # Load the reliable model (TTS handles GPU automatically)
         print("   Loading tacotron2-DDC model...")
-        tts = TTS("tts_models/en/ljspeech/tacotron2-DDC").to(device)
+        tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=torch.cuda.is_available())
 
         # Test synthesis
         test_text = "Hello, this is the neural TTS engine working on H100 GPU"
