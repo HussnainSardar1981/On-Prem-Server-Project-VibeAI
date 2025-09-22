@@ -113,10 +113,14 @@ class GPUSTTEngine:
             if self.device == "cuda":
                 self.model = self.model.cuda()
 
-                # Enable half precision for H100 if specified
-                if self.compute_type == "float16":
-                    self.model = self.model.half()
-                    self.logger.info("Enabled FP16 precision for faster inference")
+                # Force all model parameters to float32 to avoid H100 mixed precision issues
+                for param in self.model.parameters():
+                    param.data = param.data.float()
+
+                # Disable automatic mixed precision globally
+                torch.backends.cudnn.allow_tf32 = False
+                torch.backends.cuda.matmul.allow_tf32 = False
+                self.logger.info("Forced float32 precision to avoid H100 type conflicts")
 
             # Set model to evaluation mode
             self.model.eval()
@@ -213,7 +217,13 @@ class GPUSTTEngine:
             if np.max(np.abs(audio_data)) > 1.0:
                 audio_data = audio_data / np.max(np.abs(audio_data))
 
-            # Transcribe with Whisper
+            # Force audio data type and tensor conversion for H100 compatibility
+            audio_data = audio_data.astype(np.float32)
+            audio_tensor = torch.from_numpy(audio_data).float()
+            if self.device == "cuda":
+                audio_tensor = audio_tensor.cuda()
+
+            # Transcribe with Whisper using float32 tensor
             with torch.no_grad():
                 if self.device == "cuda":
                     torch.cuda.synchronize()
@@ -227,7 +237,8 @@ class GPUSTTEngine:
                     "condition_on_previous_text": False  # Disable for telephony
                 }
 
-                result = self.model.transcribe(audio_data, **transcribe_options)
+                # Use CPU numpy array to avoid GPU tensor type conflicts
+                result = self.model.transcribe(audio_tensor.cpu().numpy(), **transcribe_options)
 
                 if self.device == "cuda":
                     torch.cuda.synchronize()
