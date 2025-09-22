@@ -171,7 +171,8 @@ class NeuralVoiceBot:
 
             # Initialize Neural TTS with GPU acceleration
             logger.info("🎙️  Loading Neural TTS Engine...")
-            self.neural_tts = TTS(self.config.tts_model_name).to(self.config.device)
+            use_gpu = self.config.device == "cuda"
+            self.neural_tts = TTS(self.config.tts_model_name, gpu=use_gpu)
 
             # Warm up TTS model (simplified for tacotron2)
             test_text = "Neural TTS engine initialized successfully"
