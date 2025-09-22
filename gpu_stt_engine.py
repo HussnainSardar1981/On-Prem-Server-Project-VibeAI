@@ -221,7 +221,7 @@ class GPUSTTEngine:
                 transcribe_options = {
                     "language": "en",
                     "task": "transcribe",
-                    "fp16": self.compute_type == "float16",
+                    "fp16": False,  # Disable half precision to fix Float/Half type conflict
                     "verbose": False,
                     "word_timestamps": False,  # Disable for speed
                     "condition_on_previous_text": False  # Disable for telephony
