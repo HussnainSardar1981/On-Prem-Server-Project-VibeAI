@@ -11,6 +11,7 @@ import logging
 import time
 import tempfile
 import signal
+import subprocess
 from typing import Optional, Dict, Any
 
 # CRITICAL: Check if we're in AGI environment FIRST
