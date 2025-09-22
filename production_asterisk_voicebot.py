@@ -69,8 +69,8 @@ class NeuralConfig:
         self.use_h100_optimization = True
         self.mixed_precision = True
 
-        # Neural TTS Configuration
-        self.tts_model_name = "tts_models/multilingual/multi-dataset/xtts_v2"
+        # Neural TTS Configuration - Using reliable model
+        self.tts_model_name = "tts_models/en/ljspeech/tacotron2-DDC"
         self.tts_speaker = "Alexis Smith"  # Professional female voice
         self.tts_language = "en"
         self.tts_speed = 1.0
@@ -173,15 +173,12 @@ class NeuralVoiceBot:
             logger.info("🎙️  Loading Neural TTS Engine...")
             self.neural_tts = TTS(self.config.tts_model_name).to(self.config.device)
 
-            # Warm up TTS model
+            # Warm up TTS model (simplified for tacotron2)
             test_text = "Neural TTS engine initialized successfully"
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                 self.neural_tts.tts_to_file(
                     text=test_text,
-                    file_path=temp_file.name,
-                    speaker=self.config.tts_speaker,
-                    language=self.config.tts_language,
-                    speed=self.config.tts_speed
+                    file_path=temp_file.name
                 )
                 os.unlink(temp_file.name)
 
@@ -253,13 +250,10 @@ class NeuralVoiceBot:
                 elif emotion == "urgent":
                     speed = 1.2  # Faster for urgency
 
-                # Generate neural speech with H100 acceleration
+                # Generate neural speech with H100 acceleration (tacotron2 simplified)
                 self.neural_tts.tts_to_file(
                     text=clean_text,
-                    file_path=wav_file,
-                    speaker=speaker,
-                    language=self.config.tts_language,
-                    speed=speed
+                    file_path=wav_file
                 )
 
             # Verify audio file quality
