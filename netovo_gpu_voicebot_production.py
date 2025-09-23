@@ -308,44 +308,141 @@ class NetovoGPUVoiceBot:
                 pass
 
     def play_response_audio(self, audio_data: np.ndarray) -> bool:
-        """Play response audio through Asterisk with optimized pipeline"""
+        """Play response audio through Asterisk with proper telephony format conversion"""
         try:
             if len(audio_data) == 0:
                 self.log_call_info("No audio data to play")
                 return False
 
-            # Create temporary file for Asterisk playback
-            with tempfile.NamedTemporaryFile(
-                suffix=".wav",
-                dir="/tmp",
-                delete=False
-            ) as temp_file:
-                temp_path = temp_file.name
+            # Create unique filenames
+            timestamp = int(time.time())
+            temp_raw = f"/tmp/voicebot_raw_{timestamp}.wav"
+            asterisk_file = f"/var/lib/asterisk/sounds/voicebot_{timestamp}"
 
             try:
-                # Save audio in Asterisk-compatible format
-                self.pipeline.save_audio_for_asterisk(audio_data, temp_path)
+                # Step 1: Save GPU audio as raw file
+                import soundfile as sf
 
-                # Remove .wav extension for Asterisk (it adds it automatically)
-                asterisk_path = temp_path.replace(".wav", "")
+                # Ensure audio is float32 and normalized
+                if audio_data.dtype != np.float32:
+                    audio_data = audio_data.astype(np.float32)
 
-                self.log_call_info(f"Playing audio: {asterisk_path}")
+                # Normalize to prevent clipping
+                if np.max(np.abs(audio_data)) > 0:
+                    audio_data = audio_data / np.max(np.abs(audio_data)) * 0.95
 
-                # Play audio through Asterisk
-                result = self.agi.stream_file(asterisk_path)
-                self.log_call_info(f"Audio playback result: {result}")
+                # Save raw audio (assume 22050 Hz from neural TTS)
+                sf.write(temp_raw, audio_data, 22050)
+
+                self.log_call_info(f"Raw audio saved: {temp_raw} ({len(audio_data)} samples)")
+
+                # Step 2: Convert to telephony format using sox
+                import subprocess
+                conversion_cmd = [
+                    'sox', temp_raw,
+                    '-r', '8000',    # 8kHz sample rate for telephony
+                    '-c', '1',       # Mono
+                    '-b', '16',      # 16-bit
+                    f"{asterisk_file}.wav"
+                ]
+
+                subprocess.run(conversion_cmd, check=True, timeout=10)
+                self.log_call_info(f"Audio converted for telephony: {asterisk_file}.wav")
+
+                # Step 3: Play through AGI (without .wav extension)
+                result = self.agi.stream_file(f"voicebot_{timestamp}", "")
+                self.log_call_info(f"AGI stream_file result: {result}")
+
+                # Check if file exists and size
+                if os.path.exists(f"{asterisk_file}.wav"):
+                    file_size = os.path.getsize(f"{asterisk_file}.wav")
+                    self.log_call_info(f"Final audio file size: {file_size} bytes")
 
                 return True
 
             finally:
-                # Cleanup temporary file
+                # Cleanup files with delay to ensure Asterisk finishes playing
+                import threading
+                def delayed_cleanup():
+                    time.sleep(3)  # Wait for playback to complete
+                    try:
+                        if os.path.exists(temp_raw):
+                            os.remove(temp_raw)
+                        if os.path.exists(f"{asterisk_file}.wav"):
+                            os.remove(f"{asterisk_file}.wav")
+                        self.log_call_info("Audio files cleaned up")
+                    except Exception as cleanup_error:
+                        self.log_call_info(f"Cleanup warning: {cleanup_error}")
+
+                cleanup_thread = threading.Thread(target=delayed_cleanup)
+                cleanup_thread.daemon = True
+                cleanup_thread.start()
+
+        except subprocess.CalledProcessError as e:
+            self.log_call_info(f"Audio conversion failed: {e}")
+            # Fallback to espeak
+            return self.play_espeak_fallback(audio_data)
+        except Exception as e:
+            self.log_call_info(f"Audio playback failed: {e}")
+            return False
+
+    def play_espeak_fallback(self, audio_data: np.ndarray = None, text: str = "") -> bool:
+        """Fallback audio using espeak when GPU pipeline fails"""
+        try:
+            if not text and audio_data is not None:
+                # If we have audio data but no text, use generic message
+                text = "Please hold while we process your request."
+
+            if not text:
+                text = "I'm sorry, I'm having audio difficulties."
+
+            timestamp = int(time.time())
+            espeak_file = f"/var/lib/asterisk/sounds/espeak_{timestamp}"
+
+            # Generate audio with espeak directly in telephony format
+            import subprocess
+            espeak_cmd = [
+                'espeak', text,
+                '-s', '160',    # Speed
+                '-p', '45',     # Pitch
+                '-a', '100',    # Amplitude
+                '-w', f"{espeak_file}.wav"
+            ]
+
+            subprocess.run(espeak_cmd, check=True, timeout=10)
+            self.log_call_info(f"Espeak audio generated: {espeak_file}.wav")
+
+            # Convert to proper telephony format
+            conversion_cmd = [
+                'sox', f"{espeak_file}.wav",
+                '-r', '8000', '-c', '1', '-b', '16',
+                f"{espeak_file}_final.wav"
+            ]
+
+            subprocess.run(conversion_cmd, check=True, timeout=10)
+
+            # Play the final file
+            result = self.agi.stream_file(f"espeak_{timestamp}_final", "")
+            self.log_call_info(f"Espeak fallback playback result: {result}")
+
+            # Cleanup
+            import threading
+            def cleanup():
+                time.sleep(3)
                 try:
-                    Path(temp_path).unlink()
+                    if os.path.exists(f"{espeak_file}.wav"):
+                        os.remove(f"{espeak_file}.wav")
+                    if os.path.exists(f"{espeak_file}_final.wav"):
+                        os.remove(f"{espeak_file}_final.wav")
                 except:
                     pass
 
+            threading.Thread(target=cleanup, daemon=True).start()
+
+            return True
+
         except Exception as e:
-            self.log_call_info(f"Audio playback failed: {e}")
+            self.log_call_info(f"Espeak fallback failed: {e}")
             return False
 
     def play_text_message(self, message: str) -> bool:
@@ -381,14 +478,14 @@ class NetovoGPUVoiceBot:
 
             if success:
                 self.log_call_info("TTS playback successful")
+                return True
             else:
-                self.log_call_info("TTS playback failed")
-
-            return success
+                self.log_call_info("TTS playback failed - trying espeak fallback")
+                return self.play_espeak_fallback(text=message)
 
         except Exception as e:
-            self.log_call_info(f"TTS generation failed: {e}")
-            return False
+            self.log_call_info(f"TTS generation failed: {e} - trying espeak fallback")
+            return self.play_espeak_fallback(text=message)
 
     async def process_conversation_turn_async(self, audio_data: np.ndarray) -> bool:
         """Process a complete conversation turn using the streaming pipeline"""
