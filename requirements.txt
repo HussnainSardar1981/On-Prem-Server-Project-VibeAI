@@ -1,0 +1,19 @@
+# Core comms
+requests==2.*            # simple ARI control (or use asterisk-ari if you prefer)
+httpx==0.27.*            # Ollama HTTP client (or use requests; choose one)
+
+# Riva gRPC
+grpcio==1.65.*
+protobuf==4.25.*         # match grpc; do NOT mix with very old protobuf
+# grpcio-tools only if you plan to compile Riva protos yourself. Otherwise, vendor the stubs.
+# grpcio-tools==1.65.*
+
+# Audio & DSP (lightweight)
+numpy==1.26.*
+soxr==0.3.*              # fast, high-quality resampler (8k <-> 16/22.05/24k)
+webrtcvad==2.0.*         # reliable VAD for barge-in (optional but recommended)
+
+# Quality of life
+tenacity==8.*            # retry wrappers for network calls
+structlog==24.*          # clean logs
+python-dotenv==1.*       # if you want to keep creds in .env files
